@@ -1,0 +1,118 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan" Version="1.539" Build="16.0.4165.4">
+  <BatchSequence>
+    <Batch>
+      <Statements>
+        <StmtSimple StatementCompId="3" StatementEstRows="1842.16" StatementId="1" StatementOptmLevel="FULL" StatementOptmEarlyAbortReason="GoodEnoughPlanFound" CardinalityEstimationModelVersion="160" StatementSubTreeCost="0.412375" StatementText="SELECT o.OrderId, o.Status, c.Name FROM dbo.Orders o JOIN dbo.Customers c ON c.CustomerId = o.CustomerId WHERE o.CreatedDate &gt;= @p1" StatementType="SELECT" QueryHash="0x8B2C41D7A6E90F13" QueryPlanHash="0x3F7A1C90D845B266" RetrievedFromCache="false" SecurityPolicyApplied="false">
+          <StatementSetOptions ANSI_NULLS="true" ANSI_PADDING="true" ANSI_WARNINGS="true" ARITHABORT="true" CONCAT_NULL_YIELDS_NULL="true" NUMERIC_ROUNDABORT="false" QUOTED_IDENTIFIER="true" />
+          <QueryPlan DegreeOfParallelism="0" CachedPlanSize="48" CompileTime="9" CompileCPU="9" CompileMemory="392">
+            <MemoryGrantInfo SerialRequiredMemory="1024" SerialDesiredMemory="3072" />
+            <OptimizerHardwareDependentProperties EstimatedAvailableMemoryGrant="209715" EstimatedPagesCached="26214" EstimatedAvailableDegreeOfParallelism="4" MaxCompileMemory="1592168" />
+            <RelOp AvgRowSize="63" EstimateCPU="0.0316831" EstimateIO="0.0112613" EstimateRebinds="0" EstimateRewinds="0" EstimatedExecutionMode="Row" EstimateRows="1842.16" LogicalOp="Sort" NodeId="0" Parallel="false" PhysicalOp="Sort" EstimatedTotalSubtreeCost="0.412375">
+              <OutputList>
+                <ColumnReference Database="[OrdersDB]" Schema="[dbo]" Table="[Orders]" Alias="[o]" Column="OrderId" />
+                <ColumnReference Database="[OrdersDB]" Schema="[dbo]" Table="[Orders]" Alias="[o]" Column="Status" />
+                <ColumnReference Database="[OrdersDB]" Schema="[dbo]" Table="[Customers]" Alias="[c]" Column="Name" />
+              </OutputList>
+              <MemoryFractions Input="1" Output="1" />
+              <Sort Distinct="false">
+                <OrderBy>
+                  <OrderByColumn Ascending="true">
+                    <ColumnReference Database="[OrdersDB]" Schema="[dbo]" Table="[Orders]" Alias="[o]" Column="OrderId" />
+                  </OrderByColumn>
+                </OrderBy>
+                <RelOp AvgRowSize="63" EstimateCPU="0.0284919" EstimateIO="0" EstimateRebinds="0" EstimateRewinds="0" EstimatedExecutionMode="Row" EstimateRows="1842.16" LogicalOp="Inner Join" NodeId="1" Parallel="false" PhysicalOp="Hash Match" EstimatedTotalSubtreeCost="0.369431">
+                  <OutputList>
+                    <ColumnReference Database="[OrdersDB]" Schema="[dbo]" Table="[Orders]" Alias="[o]" Column="OrderId" />
+                    <ColumnReference Database="[OrdersDB]" Schema="[dbo]" Table="[Orders]" Alias="[o]" Column="Status" />
+                    <ColumnReference Database="[OrdersDB]" Schema="[dbo]" Table="[Customers]" Alias="[c]" Column="Name" />
+                  </OutputList>
+                  <MemoryFractions Input="0.5" Output="0.5" />
+                  <Hash>
+                    <DefinedValues />
+                    <HashKeysBuild>
+                      <ColumnReference Database="[OrdersDB]" Schema="[dbo]" Table="[Customers]" Alias="[c]" Column="CustomerId" />
+                    </HashKeysBuild>
+                    <HashKeysProbe>
+                      <ColumnReference Database="[OrdersDB]" Schema="[dbo]" Table="[Orders]" Alias="[o]" Column="CustomerId" />
+                    </HashKeysProbe>
+                    <ProbeResidual>
+                      <ScalarOperator ScalarString="[OrdersDB].[dbo].[Customers].[CustomerId] as [c].[CustomerId] = [OrdersDB].[dbo].[Orders].[CustomerId] as [o].[CustomerId]">
+                        <Compare CompareOp="EQ">
+                          <ScalarOperator>
+                            <Identifier>
+                              <ColumnReference Database="[OrdersDB]" Schema="[dbo]" Table="[Customers]" Alias="[c]" Column="CustomerId" />
+                            </Identifier>
+                          </ScalarOperator>
+                          <ScalarOperator>
+                            <Identifier>
+                              <ColumnReference Database="[OrdersDB]" Schema="[dbo]" Table="[Orders]" Alias="[o]" Column="CustomerId" />
+                            </Identifier>
+                          </ScalarOperator>
+                        </Compare>
+                      </ScalarOperator>
+                    </ProbeResidual>
+                    <RelOp AvgRowSize="35" EstimateCPU="0.0043835" EstimateIO="0.0723380" EstimateRebinds="0" EstimateRewinds="0" EstimatedExecutionMode="Row" EstimateRows="3800" EstimatedRowsRead="3800" LogicalOp="Clustered Index Scan" NodeId="2" Parallel="false" PhysicalOp="Clustered Index Scan" EstimatedTotalSubtreeCost="0.0767215" TableCardinality="3800">
+                      <OutputList>
+                        <ColumnReference Database="[OrdersDB]" Schema="[dbo]" Table="[Customers]" Alias="[c]" Column="CustomerId" />
+                        <ColumnReference Database="[OrdersDB]" Schema="[dbo]" Table="[Customers]" Alias="[c]" Column="Name" />
+                      </OutputList>
+                      <IndexScan Ordered="false" ForcedIndex="false" ForceScan="false" NoExpandHint="false" Storage="RowStore">
+                        <DefinedValues>
+                          <DefinedValue>
+                            <ColumnReference Database="[OrdersDB]" Schema="[dbo]" Table="[Customers]" Alias="[c]" Column="CustomerId" />
+                          </DefinedValue>
+                          <DefinedValue>
+                            <ColumnReference Database="[OrdersDB]" Schema="[dbo]" Table="[Customers]" Alias="[c]" Column="Name" />
+                          </DefinedValue>
+                        </DefinedValues>
+                        <Object Database="[OrdersDB]" Schema="[dbo]" Table="[Customers]" Index="[PK_Customers]" Alias="[c]" IndexKind="Clustered" Storage="RowStore" />
+                      </IndexScan>
+                    </RelOp>
+                    <RelOp AvgRowSize="42" EstimateCPU="0.0187321" EstimateIO="0.2455540" EstimateRebinds="0" EstimateRewinds="0" EstimatedExecutionMode="Row" EstimateRows="1842.16" EstimatedRowsRead="16920" LogicalOp="Clustered Index Scan" NodeId="3" Parallel="false" PhysicalOp="Clustered Index Scan" EstimatedTotalSubtreeCost="0.2642861" TableCardinality="16920">
+                      <OutputList>
+                        <ColumnReference Database="[OrdersDB]" Schema="[dbo]" Table="[Orders]" Alias="[o]" Column="OrderId" />
+                        <ColumnReference Database="[OrdersDB]" Schema="[dbo]" Table="[Orders]" Alias="[o]" Column="CustomerId" />
+                        <ColumnReference Database="[OrdersDB]" Schema="[dbo]" Table="[Orders]" Alias="[o]" Column="Status" />
+                      </OutputList>
+                      <IndexScan Ordered="false" ForcedIndex="false" ForceScan="false" NoExpandHint="false" Storage="RowStore">
+                        <DefinedValues>
+                          <DefinedValue>
+                            <ColumnReference Database="[OrdersDB]" Schema="[dbo]" Table="[Orders]" Alias="[o]" Column="OrderId" />
+                          </DefinedValue>
+                          <DefinedValue>
+                            <ColumnReference Database="[OrdersDB]" Schema="[dbo]" Table="[Orders]" Alias="[o]" Column="CustomerId" />
+                          </DefinedValue>
+                          <DefinedValue>
+                            <ColumnReference Database="[OrdersDB]" Schema="[dbo]" Table="[Orders]" Alias="[o]" Column="Status" />
+                          </DefinedValue>
+                        </DefinedValues>
+                        <Object Database="[OrdersDB]" Schema="[dbo]" Table="[Orders]" Index="[PK_Orders]" Alias="[o]" IndexKind="Clustered" Storage="RowStore" />
+                        <Predicate>
+                          <ScalarOperator ScalarString="[OrdersDB].[dbo].[Orders].[CreatedDate] as [o].[CreatedDate]&gt;=[@p1]">
+                            <Compare CompareOp="GE">
+                              <ScalarOperator>
+                                <Identifier>
+                                  <ColumnReference Database="[OrdersDB]" Schema="[dbo]" Table="[Orders]" Alias="[o]" Column="CreatedDate" />
+                                </Identifier>
+                              </ScalarOperator>
+                              <ScalarOperator>
+                                <Identifier>
+                                  <ColumnReference Column="@p1" />
+                                </Identifier>
+                              </ScalarOperator>
+                            </Compare>
+                          </ScalarOperator>
+                        </Predicate>
+                      </IndexScan>
+                    </RelOp>
+                  </Hash>
+                </RelOp>
+              </Sort>
+            </RelOp>
+          </QueryPlan>
+        </StmtSimple>
+      </Statements>
+    </Batch>
+  </BatchSequence>
+</ShowPlanXML>

@@ -1,0 +1,27 @@
+node_modules/
+coverage/
+.vite/
+dist/
+release/
+.qa/
+.artifact-work/
+outputs/
+private-answer-key/
+
+# Local diagnostic captures and exported investigation bundles.
+/capture2.xlsx
+*.sqleval.json
+*.sqlevalcase.zip
+
+# Local configuration, logs, and build metadata.
+.env
+.env.*
+!.env.example
+*.log
+*.tsbuildinfo
+
+# Editor and operating-system metadata.
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

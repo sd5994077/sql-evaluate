@@ -1,0 +1,7 @@
+collection_time,session_id,request_id,status,blocking_session_id,blocked_session_count,open_tran_count,wait_info,sql_text,database_name,plan_handle,sql_handle,query_hash,query_plan_hash,database_id
+2026-08-28T12:00:02Z,104,0,runnable,,5,2,,EXEC Training.RootWork,Training,0xABCD,0xDCBA,0x1111,0x2222,5
+2026-08-28T12:00:02Z,236,0,suspended,104,4,1,"(780ms)LCK_M_IX",INSERT INTO Training.DecisionTreeTrav VALUES (...),Training,,,,,
+2026-08-28T12:00:02Z,301,0,suspended,236,0,1,"(688ms)LCK_M_IX",INSERT INTO Training.DecisionTreeTrav VALUES (...),Training,,,,,
+2026-08-28T12:00:02Z,302,0,suspended,236,0,1,"(710ms)LCK_M_IX",INSERT INTO Training.DecisionTreeTrav VALUES (...),Training,,,,,
+2026-08-28T12:00:02Z,303,0,suspended,236,0,1,"(740ms)LCK_M_IX",INSERT INTO Training.DecisionTreeTrav VALUES (...),Training,,,,,
+2026-08-28T12:00:02Z,304,0,suspended,236,0,1,"(760ms)LCK_M_IX",INSERT INTO Training.DecisionTreeTrav VALUES (...),Training,,,,,

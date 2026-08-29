@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ShowPlanXML Version="1.6" xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan">
+  <BatchSequence><Batch><Statements>
+    <StmtSimple StatementText="SELECT * FROM dbo.SyntheticFact WHERE CategoryId = @CategoryId" StatementType="SELECT" StatementSubTreeCost="9">
+      <QueryPlan>
+        <MemoryGrantInfo RequestedMemory="800000" GrantedMemory="800000" MaxUsedMemory="50000" />
+        <MissingIndexes><MissingIndexGroup Impact="82"><MissingIndex Database="[Synthetic]" Schema="[dbo]" Table="[SyntheticFact]" /></MissingIndexGroup></MissingIndexes>
+        <RelOp NodeId="1" PhysicalOp="Hash Match" LogicalOp="Inner Join" EstimateRows="1000" EstimatedTotalSubtreeCost="9">
+          <Warnings SpillToTempDb="1"><HashSpillDetails GrantedMemoryKb="1024" /></Warnings>
+          <RunTimeInformation><RunTimeCountersPerThread Thread="0" ActualRows="200000" /></RunTimeInformation>
+        </RelOp>
+      </QueryPlan>
+    </StmtSimple>
+  </Statements></Batch></BatchSequence>
+</ShowPlanXML>

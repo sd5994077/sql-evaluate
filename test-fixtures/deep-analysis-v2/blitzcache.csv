@@ -1,0 +1,2 @@
+evidence_set,captured_at,session_id,request_id,plan_handle,sql_handle,query_hash,query_plan_hash,database_id,Warnings,plan_count,single_use_plan_count,Query Plan
+PLAN_CACHE_INVENTORY,2026-08-28T12:00:06Z,104,0,0xABCD,0xDCBA,0x1111,0x2222,5,"Plan Cache Instability; Forced Serialization; Compilation Timeout; Unused Memory Grant; Filter UDF; non-SARGable",35600,35000,NULL

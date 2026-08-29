@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan" Version="1.564" Build="16.0.4145.4">
+  <BatchSequence>
+    <Batch>
+      <Statements>
+        <StmtSimple StatementCompId="1" StatementEstRows="7.42513" StatementId="1" StatementOptmLevel="TRIVIAL" StatementSubTreeCost="0.0065704" StatementText="SELECT ItemId, WarehouseId, Qty FROM dbo.InventoryLevels WHERE WarehouseId = 48213" StatementType="SELECT" QueryHash="0x8C3F19A72D0B4E51" QueryPlanHash="0x4B7E20C6A9D31F08" RetrievedFromCache="false" SecurityPolicyApplied="false">
+          <StatementSetOptions ANSI_NULLS="true" ANSI_PADDING="true" ANSI_WARNINGS="true" ARITHABORT="true" CONCAT_NULL_YIELDS_NULL="true" NUMERIC_ROUNDABORT="false" QUOTED_IDENTIFIER="true" />
+          <QueryPlan CachedPlanSize="16" CompileTime="2" CompileCPU="2" CompileMemory="192" NonParallelPlanReason="EstimatedDOPIsOne" DegreeOfParallelism="0" MemoryGrant="0">
+            <MemoryGrantInfo SerialRequiredMemory="0" SerialDesiredMemory="0" GrantedMemory="0" MaxUsedMemory="0" />
+            <OptimizerHardwareDependentProperties EstimatedAvailableMemoryGrant="1048576" EstimatedPagesCached="65536" EstimatedAvailableDegreeOfParallelism="4" MaxCompileMemory="4194304" />
+            <TraceFlags IsCompileTime="true">
+              <TraceFlag Value="7412" Scope="Global" />
+            </TraceFlags>
+            <TraceFlags IsCompileTime="false">
+              <TraceFlag Value="7412" Scope="Global" />
+            </TraceFlags>
+            <WaitStats>
+              <Wait WaitType="SOS_SCHEDULER_YIELD" WaitTimeMs="1" WaitCount="3" />
+            </WaitStats>
+            <QueryTimeStats CpuTime="1" ElapsedTime="3" />
+            <RelOp AvgRowSize="27" EstimateCPU="0.000163951" EstimateIO="0.003125" EstimateRebinds="0" EstimateRewinds="0" EstimatedExecutionMode="Row" EstimateRows="7.42513" EstimatedRowsRead="7.42513" LogicalOp="Index Seek" NodeId="0" Parallel="false" PhysicalOp="Index Seek" EstimatedTotalSubtreeCost="0.0065704" TableCardinality="1842300">
+              <OutputList>
+                <ColumnReference Database="[InventoryDB]" Schema="[dbo]" Table="[InventoryLevels]" Column="ItemId" />
+                <ColumnReference Database="[InventoryDB]" Schema="[dbo]" Table="[InventoryLevels]" Column="WarehouseId" />
+                <ColumnReference Database="[InventoryDB]" Schema="[dbo]" Table="[InventoryLevels]" Column="Qty" />
+              </OutputList>
+              <RunTimeInformation>
+                <RunTimeCountersPerThread Thread="0" ActualRows="6" ActualRowsRead="6" Batches="0" ActualEndOfScans="1" ActualExecutions="1" ActualExecutionMode="Row" ActualElapsedms="2" ActualCPUms="1" ActualScans="1" ActualLogicalReads="9" ActualPhysicalReads="0" ActualReadAheads="0" ActualLobLogicalReads="0" ActualLobPhysicalReads="0" ActualLobReadAheads="0" />
+              </RunTimeInformation>
+              <IndexScan Ordered="true" ScanDirection="FORWARD" ForcedIndex="false" ForceSeek="false" ForceScan="false" NoExpandHint="false" Storage="RowStore">
+                <DefinedValues>
+                  <DefinedValue>
+                    <ColumnReference Database="[InventoryDB]" Schema="[dbo]" Table="[InventoryLevels]" Column="ItemId" />
+                  </DefinedValue>
+                  <DefinedValue>
+                    <ColumnReference Database="[InventoryDB]" Schema="[dbo]" Table="[InventoryLevels]" Column="WarehouseId" />
+                  </DefinedValue>
+                  <DefinedValue>
+                    <ColumnReference Database="[InventoryDB]" Schema="[dbo]" Table="[InventoryLevels]" Column="Qty" />
+                  </DefinedValue>
+                </DefinedValues>
+                <Object Database="[InventoryDB]" Schema="[dbo]" Table="[InventoryLevels]" Index="[IX_InventoryLevels_WarehouseId]" IndexKind="NonClustered" Storage="RowStore" />
+                <SeekPredicates>
+                  <SeekPredicateNew>
+                    <SeekKeys>
+                      <Prefix ScanType="EQ">
+                        <RangeColumns>
+                          <ColumnReference Database="[InventoryDB]" Schema="[dbo]" Table="[InventoryLevels]" Column="WarehouseId" />
+                        </RangeColumns>
+                        <RangeExpressions>
+                          <ScalarOperator ScalarString="(48213)">
+                            <Const ConstValue="(48213)" />
+                          </ScalarOperator>
+                        </RangeExpressions>
+                      </Prefix>
+                    </SeekKeys>
+                  </SeekPredicateNew>
+                </SeekPredicates>
+                <Predicate>
+                  <ScalarOperator ScalarString="[InventoryDB].[dbo].[InventoryLevels].[WarehouseId]=(48213)">
+                    <Compare CompareOp="EQ">
+                      <ScalarOperator>
+                        <Identifier>
+                          <ColumnReference Database="[InventoryDB]" Schema="[dbo]" Table="[InventoryLevels]" Column="WarehouseId" />
+                        </Identifier>
+                      </ScalarOperator>
+                      <ScalarOperator>
+                        <Const ConstValue="(48213)" />
+                      </ScalarOperator>
+                    </Compare>
+                  </ScalarOperator>
+                </Predicate>
+              </IndexScan>
+            </RelOp>
+          </QueryPlan>
+        </StmtSimple>
+      </Statements>
+    </Batch>
+  </BatchSequence>
+</ShowPlanXML>

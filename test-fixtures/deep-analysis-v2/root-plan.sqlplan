@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SQL_EVALUATE_CAPTURED_AT=2026-08-28T12:00:08Z -->
+<ShowPlanXML Version="1.6" xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan">
+ <BatchSequence><Batch><Statements>
+  <StmtSimple StatementText="INSERT INTO Training.DecisionTreeTrav SELECT dbo.TrainingFilter(Id) FROM Training.Source" StatementType="INSERT" PlanHandle="0xABCD" SqlHandle="0xDCBA" QueryHash="0x1111" QueryPlanHash="0x2222" DatabaseId="5" StatementStartOffset="0" StatementEndOffset="200" StatementOptmLevel="FULL" StatementOptmEarlyAbortReason="TimeOut">
+   <QueryPlan DegreeOfParallelism="1" NonParallelPlanReason="TSQLUserDefinedFunctionsNotParallelizable" CompileTime="45" CompileCPU="40" CompileMemory="1024">
+    <MemoryGrantInfo RequestedMemory="1048576" GrantedMemory="1048576" MaxUsedMemory="32768" />
+    <RelOp NodeId="1" PhysicalOp="Index Scan" LogicalOp="Index Scan" EstimateRows="100" EstimatedTotalSubtreeCost="8" Parallel="0">
+     <RunTimeInformation><RunTimeCountersPerThread Thread="0" ActualRows="250000" /></RunTimeInformation>
+     <IndexScan><Predicate><ScalarOperator ScalarString="[dbo].[TrainingFilter]([Id])"><UserDefinedFunction /></ScalarOperator></Predicate><Object Schema="[Training]" Table="[Source]" Index="[IX_Source]" /></IndexScan>
+    </RelOp>
+   </QueryPlan>
+  </StmtSimple>
+ </Statements></Batch></BatchSequence>
+</ShowPlanXML>

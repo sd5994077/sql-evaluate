@@ -1,0 +1,2 @@
+evidence_set,DatabaseName,QueryType,Warnings,Executions,TotalCPU,Query Plan
+BLITZ_CACHE,ExampleDb,INSERT,"Plan Cache Instability; Forced Serialization; Compilation Timeout; Unused Memory Grant; Filter UDF; non-SARGable",245,985000,NULL

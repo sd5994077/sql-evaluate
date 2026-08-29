@@ -1,0 +1,3 @@
+evidence_set,captured_at,request_session_id,transaction_id,transaction_begin_time,resource_type,request_mode,request_status,request_owner_type,request_owner_id
+LOCKS,2026-08-27T15:10:00Z,55,90210,2026-08-27T15:02:11Z,OBJECT,IX,GRANT,TRANSACTION,90210
+LOCKS,2026-08-27T15:10:00Z,55,90210,2026-08-27T15:02:11Z,KEY,X,GRANT,TRANSACTION,90210

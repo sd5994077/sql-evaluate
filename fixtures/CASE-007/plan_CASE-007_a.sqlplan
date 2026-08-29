@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan" Version="1.539" Build="16.0.4165.4">
+  <BatchSequence>
+    <Batch>
+      <Statements>
+        <StmtSimple StatementText="SELECT AccountId, dbo.ufn_ComputeStatementSummary(AccountId) AS Summary FROM dbo.BillingAccounts WHERE LastStatementDate &lt; @p1" StatementId="1" StatementCompId="1" StatementType="SELECT" RetrievedFromCache="true" StatementSubTreeCost="642.118" StatementEstRows="874312" StatementOptmLevel="FULL" QueryHash="0x3D71B0C4E5A9182F" QueryPlanHash="0x81C4A2F60D3E7B95">
+          <StatementSetOptions QUOTED_IDENTIFIER="true" ARITHABORT="true" CONCAT_NULL_YIELDS_NULL="true" ANSI_NULLS="true" ANSI_PADDING="true" ANSI_WARNINGS="true" NUMERIC_ROUNDABORT="false" />
+          <QueryPlan DegreeOfParallelism="1" NonParallelPlanReason="CouldNotGenerateValidParallelPlan" MemoryGrant="1024" CachedPlanSize="96" CompileTime="9" CompileCPU="9" CompileMemory="512">
+            <MemoryGrantInfo SerialRequiredMemory="1024" SerialDesiredMemory="1024" RequiredMemory="1024" DesiredMemory="1024" RequestedMemory="1024" GrantWaitTime="0" GrantedMemory="1024" MaxUsedMemory="128" MaxQueryMemory="1048576" />
+            <OptimizerHardwareDependentProperties EstimatedAvailableMemoryGrant="655360" EstimatedPagesCached="163840" EstimatedAvailableDegreeOfParallelism="8" MaxCompileMemory="4194304" />
+            <QueryTimeStats CpuTime="219000" ElapsedTime="224000" UdfCpuTime="213400" UdfElapsedTime="215900" />
+            <RelOp NodeId="0" PhysicalOp="Compute Scalar" LogicalOp="Compute Scalar" EstimateRows="874312" EstimateIO="0" EstimateCPU="0.0874312" AvgRowSize="76" EstimatedTotalSubtreeCost="642.118" Parallel="false" EstimateRebinds="0" EstimateRewinds="0" EstimatedExecutionMode="Row">
+              <OutputList>
+                <ColumnReference Database="[BillingDB]" Schema="[dbo]" Table="[BillingAccounts]" Column="AccountId" />
+                <ColumnReference Column="Expr1002" />
+              </OutputList>
+              <RunTimeInformation>
+                <RunTimeCountersPerThread Thread="0" ActualRows="874312" ActualRowsRead="874312" ActualEndOfScans="1" ActualExecutions="1" ActualExecutionMode="Row" ActualElapsedms="224000" ActualCPUms="219000" />
+              </RunTimeInformation>
+              <ComputeScalar>
+                <DefinedValues>
+                  <DefinedValue>
+                    <ColumnReference Column="Expr1002" />
+                    <ScalarOperator ScalarString="[BillingDB].[dbo].[ufn_ComputeStatementSummary]([BillingDB].[dbo].[BillingAccounts].[AccountId])">
+                      <UserDefinedFunction FunctionName="[BillingDB].[dbo].[ufn_ComputeStatementSummary]" Statement="[dbo].[ufn_ComputeStatementSummary]([AccountId])">
+                        <ScalarOperator>
+                          <Identifier>
+                            <ColumnReference Database="[BillingDB]" Schema="[dbo]" Table="[BillingAccounts]" Column="AccountId" />
+                          </Identifier>
+                        </ScalarOperator>
+                      </UserDefinedFunction>
+                    </ScalarOperator>
+                  </DefinedValue>
+                </DefinedValues>
+                <RelOp NodeId="1" PhysicalOp="Index Scan" LogicalOp="Index Scan" EstimateRows="874312" EstimateIO="581.442" EstimateCPU="60.5885" AvgRowSize="19" EstimatedTotalSubtreeCost="642.031" TableCardinality="900000" Parallel="false" EstimateRebinds="0" EstimateRewinds="0" EstimatedExecutionMode="Row">
+                  <OutputList>
+                    <ColumnReference Database="[BillingDB]" Schema="[dbo]" Table="[BillingAccounts]" Column="AccountId" />
+                  </OutputList>
+                  <RunTimeInformation>
+                    <RunTimeCountersPerThread Thread="0" ActualRows="874312" ActualRowsRead="900000" ActualEndOfScans="1" ActualExecutions="1" ActualExecutionMode="Row" ActualElapsedms="8140" ActualCPUms="7960" ActualScans="1" ActualLogicalReads="112480" ActualPhysicalReads="0" ActualReadAheads="112301" ActualLobLogicalReads="0" ActualLobPhysicalReads="0" ActualLobReadAheads="0" />
+                  </RunTimeInformation>
+                  <IndexScan Ordered="false" ForcedIndex="false" ForceScan="false" NoExpandHint="false" Storage="RowStore">
+                    <DefinedValues>
+                      <DefinedValue>
+                        <ColumnReference Database="[BillingDB]" Schema="[dbo]" Table="[BillingAccounts]" Column="AccountId" />
+                      </DefinedValue>
+                      <DefinedValue>
+                        <ColumnReference Database="[BillingDB]" Schema="[dbo]" Table="[BillingAccounts]" Column="LastStatementDate" />
+                      </DefinedValue>
+                    </DefinedValues>
+                    <Object Database="[BillingDB]" Schema="[dbo]" Table="[BillingAccounts]" Index="[IX_BillingAccounts_LastStatementDate]" IndexKind="NonClustered" Storage="RowStore" />
+                    <Predicate>
+                      <ScalarOperator ScalarString="[BillingDB].[dbo].[BillingAccounts].[LastStatementDate]&lt;[@p1]">
+                        <Compare CompareOp="LT">
+                          <ScalarOperator>
+                            <Identifier>
+                              <ColumnReference Database="[BillingDB]" Schema="[dbo]" Table="[BillingAccounts]" Column="LastStatementDate" />
+                            </Identifier>
+                          </ScalarOperator>
+                          <ScalarOperator>
+                            <Identifier>
+                              <ColumnReference Column="@p1" />
+                            </Identifier>
+                          </ScalarOperator>
+                        </Compare>
+                      </ScalarOperator>
+                    </Predicate>
+                  </IndexScan>
+                </RelOp>
+              </ComputeScalar>
+            </RelOp>
+            <ParameterList>
+              <ColumnReference Column="@p1" ParameterDataType="datetime" ParameterCompiledValue="'2026-01-01 00:00:00.000'" ParameterRuntimeValue="'2026-01-01 00:00:00.000'" />
+            </ParameterList>
+          </QueryPlan>
+        </StmtSimple>
+      </Statements>
+    </Batch>
+  </BatchSequence>
+</ShowPlanXML>

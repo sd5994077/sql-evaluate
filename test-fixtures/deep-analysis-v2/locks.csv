@@ -1,0 +1,6 @@
+adapter_id,case_id,evidence_set,captured_at,session_id,request_session_id,transaction_id,open_transaction_count,request_status,request_mode,resource_type,resource_database_id,resource_associated_entity_id,resource_description
+SQL_EVALUATE_NATIVE_V1,acceptance-case,TRANSACTIONS_LOCKS,2026-08-28T12:00:05Z,104,104,90001,2,GRANT,IX,OBJECT,5,700100,
+SQL_EVALUATE_NATIVE_V1,acceptance-case,TRANSACTIONS_LOCKS,2026-08-28T12:00:05Z,301,301,90011,1,WAIT,IX,OBJECT,5,700100,
+SQL_EVALUATE_NATIVE_V1,acceptance-case,TRANSACTIONS_LOCKS,2026-08-28T12:00:05Z,302,302,90012,1,WAIT,IX,OBJECT,5,700100,
+SQL_EVALUATE_NATIVE_V1,acceptance-case,TRANSACTIONS_LOCKS,2026-08-28T12:00:05Z,303,303,90013,1,WAIT,IX,OBJECT,5,700100,
+SQL_EVALUATE_NATIVE_V1,acceptance-case,TRANSACTIONS_LOCKS,2026-08-28T12:00:05Z,304,304,90014,1,WAIT,IX,OBJECT,5,700100,

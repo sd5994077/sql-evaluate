@@ -1,0 +1,2 @@
+adapter_id,case_id,evidence_set,captured_at,session_id,request_id,plan_handle,sql_handle,query_hash,query_plan_hash,database_id,query_plan
+SQL_EVALUATE_NATIVE_V1,acceptance-case,REQUEST_PLAN,2026-08-28T12:00:07Z,104,0,0xABCD,0xDCBA,0x1111,0x2222,5,NULL

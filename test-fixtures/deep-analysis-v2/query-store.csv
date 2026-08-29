@@ -1,0 +1,2 @@
+adapter_id,case_id,evidence_set,captured_at,query_id,plan_id,query_hash,query_plan_hash,database_id,runtime_interval_start,avg_duration,avg_cpu_time,count_executions,query_plan
+QUERY_STORE_EXPORT_V1,acceptance-case,QUERY_STORE,2026-08-28T12:00:08Z,501,601,0x1111,0x2222,5,2026-08-28T12:00:00Z,850000,720000,12,NULL

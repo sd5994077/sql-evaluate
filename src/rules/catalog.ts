@@ -1,0 +1,23 @@
+export const RULE_THRESHOLDS = {
+  blocking: { highVictims: 5, highPersistenceSeconds: 60, mediumPersistenceSeconds: 15 },
+  resources: { highDurationSeconds: 900, mediumDurationSeconds: 300, highPercentile: 0.95, mediumPercentile: 0.9, repeatedCaptures: 3 },
+  waits: { actionableDurationMs: 1000, highPersistenceSeconds: 60 },
+  transactions: { highAgeSeconds: 900, mediumAgeSeconds: 300 },
+  plans: { mediumEstimateRatio: 10, highEstimateRatio: 100, mediumRows: 10_000, highRows: 100_000, mediumMissingIndexImpact: 70, mediumGrantWasteKb: 128 * 1024, highGrantWasteKb: 512 * 1024, mediumGrantRatio: 4, highGrantRatio: 8 },
+} as const;
+
+export const REFERENCES = {
+  blocking: [{ label: "Microsoft: Understand and resolve blocking", url: "https://learn.microsoft.com/en-us/troubleshoot/sql/database-engine/performance/understand-resolve-blocking" }],
+  blockingSessionId: [{ label: "Microsoft: blocking_session_id special values", url: "https://learn.microsoft.com/en-us/sql/relational-databases/system-dynamic-management-views/sys-dm-exec-requests-transact-sql" }],
+  waits: [{ label: "Microsoft: SQL Server wait types", url: "https://learn.microsoft.com/en-us/sql/relational-databases/system-dynamic-management-views/sys-dm-os-wait-stats-transact-sql" }],
+  memory: [{ label: "Microsoft: Troubleshoot memory grants", url: "https://learn.microsoft.com/en-us/troubleshoot/sql/database-engine/performance/troubleshoot-memory-grant-issues" }],
+  plans: [{ label: "Microsoft: Execution plans", url: "https://learn.microsoft.com/en-us/sql/relational-databases/performance/execution-plans" }],
+  indexes: [{ label: "Microsoft: Missing-index suggestions", url: "https://learn.microsoft.com/en-us/sql/relational-databases/indexes/tune-nonclustered-missing-index-suggestions" }],
+  firstResponder: [{ label: "Brent Ozar: First Responder Kit", url: "https://github.com/brentozarultd/sql-server-first-responder-kit" }],
+  whoIsActive: [{ label: "Adam Machanic: sp_WhoIsActive", url: "https://github.com/amachanic/sp_whoisactive" }],
+  blitzFirst: [{ label: "Brent Ozar: sp_BlitzFirst", url: "https://www.brentozar.com/askbrent/" }],
+  blitzWho: [{ label: "Brent Ozar: sp_BlitzWho", url: "https://www.brentozar.com/first-aid/sp_blitzwho/" }],
+  blitzCache: [{ label: "Brent Ozar: sp_BlitzCache", url: "https://github.com/BrentOzarULTD/SQL-Server-First-Responder-Kit/blob/dev/sp_BlitzCache.sql" }],
+  blitzIndex: [{ label: "Brent Ozar: sp_BlitzIndex", url: "https://www.brentozar.com/blitzindex/" }],
+  olaIndexOptimize: [{ label: "Ola Hallengren: IndexOptimize", url: "https://ola.hallengren.com/sql-server-index-and-statistics-maintenance.html" }],
+};

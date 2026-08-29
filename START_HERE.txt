@@ -1,0 +1,44 @@
+SQL EVALUATE - START HERE
+=========================
+
+SQL Evaluate is a local SQL Server capture-review tool. It does not connect
+to SQL Server, upload files, use telemetry, or call an AI service.
+
+QUICK START
+-----------
+
+1. Save the ZIP file to a local folder.
+2. Extract the entire ZIP before running anything inside it.
+3. Confirm that Node.js 20 or newer is installed:
+
+       node --version
+
+4. Double-click "Start SQL Evaluate.cmd".
+5. Keep the command window open while using the dashboard.
+6. Load a supported capture or execution-plan file in the browser.
+7. Close the command window when finished.
+
+The dashboard runs only on 127.0.0.1, which is the local computer.
+
+IF IT DOES NOT START
+--------------------
+
+- If Node.js is missing, install an organization-approved Node.js 20 or newer
+  release, then run the launcher again.
+- If the browser does not open automatically, copy the http://127.0.0.1 URL
+  displayed in the command window and paste it into Edge or Chrome.
+- If the dashboard is blank, refresh the browser and confirm that the dist
+  folder was extracted beside the launcher.
+- If Windows or endpoint protection blocks the package, do not bypass the
+  warning. Verify the sender and release checksum, then follow organizational
+  security policy or contact the distributing team.
+
+PRIVACY
+-------
+
+Imported files stay in the browser session. Default exports are redacted.
+Selecting "Include raw details" can place sensitive source data into a saved
+ZIP, so raw exports must be stored in an access-controlled location.
+
+Read HOW_IT_WORKS.md for the complete operating and privacy guide.
+

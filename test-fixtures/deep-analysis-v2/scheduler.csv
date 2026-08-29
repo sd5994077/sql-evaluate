@@ -1,0 +1,3 @@
+adapter_id,case_id,evidence_set,sample_id,captured_at,scheduler_id,runnable_tasks_count,work_queue_count,total_scheduler_delay_ms
+SQL_EVALUATE_NATIVE_V1,acceptance-case,SCHEDULERS,1,2026-08-28T12:00:03Z,0,7,0,12000
+SQL_EVALUATE_NATIVE_V1,acceptance-case,SCHEDULERS,2,2026-08-28T12:00:05Z,0,5,0,12180

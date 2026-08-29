@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { File } from "node:buffer";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -8,7 +8,7 @@ import { analyze } from "./rules/engine";
 const fixturePath = fileURLToPath(new URL("../outputs/sql-evaluate-synthetic/SQL-Evaluate-Synthetic-WhoIsActive-15-Rows.xlsx", import.meta.url));
 
 describe("synthetic all-column workbook", () => {
-  it("exercises activity and embedded actual-plan diagnostics", async () => {
+  it.skipIf(!existsSync(fixturePath))("exercises activity and embedded actual-plan diagnostics", async () => {
     const file = new File([readFileSync(fixturePath)], "SQL-Evaluate-Synthetic-WhoIsActive-15-Rows.xlsx");
     const parsed = await parseCaptureFile(file);
     const report = analyze([parsed.input], parsed.records, parsed.plans);

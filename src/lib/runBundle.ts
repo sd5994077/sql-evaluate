@@ -1,6 +1,7 @@
 import { strToU8, zipSync } from "fflate";
 import type { AnalysisReport, WhoIsActiveRecord } from "../types";
 import { APP_VERSION } from "../version";
+import { isBuiltInThresholdProfileId, verifyThresholdProfileSnapshot } from "../rules/thresholdProfiles";
 import { findingsCsv, printableReport, redactReport } from "./report";
 
 interface RunArchiveOptions {
@@ -8,6 +9,7 @@ interface RunArchiveOptions {
   processingErrors: string[];
   runId?: string;
   exportedAt?: string;
+  allowLegacyReport?: boolean;
 }
 
 interface SourceManifestEntry {
@@ -27,6 +29,7 @@ export interface RunArchive {
     analysisCreatedAt: string;
     exportedAt: string;
     rawIncluded: boolean;
+    thresholdProfile?: { id: string; name: string; version: string; digest: string; builtIn: boolean };
     sources: SourceManifestEntry[];
     counts: { inputs: number; records: number; plans: number; findings: number };
     outputs: string[];
@@ -88,9 +91,11 @@ function uniqueSourcePath(name: string, used: Set<string>): string {
 }
 
 export async function createRunArchive(report: AnalysisReport, sourceFiles: File[], options: RunArchiveOptions): Promise<RunArchive> {
+  if (!report.thresholdProfile && !options.allowLegacyReport) throw new Error("A newly generated report cannot be archived without its resolved threshold profile.");
+  const verifiedReport = report.thresholdProfile ? { ...report, thresholdProfile: await verifyThresholdProfileSnapshot(report.thresholdProfile) } : report;
   const exportedAt = options.exportedAt ?? new Date().toISOString();
   const runId = options.runId ?? defaultRunId(exportedAt);
-  const output = options.includeRaw ? report : redactReport(report);
+  const output = options.includeRaw ? verifiedReport : redactReport(verifiedReport);
   const sourcePaths = new Map<File, string>();
   const usedSourceNames = new Set<string>();
   sourceFiles.forEach((file) => sourcePaths.set(file, uniqueSourcePath(file.name, usedSourceNames)));
@@ -111,25 +116,33 @@ export async function createRunArchive(report: AnalysisReport, sourceFiles: File
     schemaVersion: "1.0",
     runId,
     appVersion: APP_VERSION,
-    analysisCreatedAt: report.createdAt,
+    analysisCreatedAt: verifiedReport.createdAt,
     exportedAt,
     rawIncluded: options.includeRaw,
+    thresholdProfile: verifiedReport.thresholdProfile ? {
+      id: verifiedReport.thresholdProfile.id,
+      name: verifiedReport.thresholdProfile.name,
+      version: verifiedReport.thresholdProfile.version,
+      digest: verifiedReport.thresholdProfile.digest,
+      builtIn: isBuiltInThresholdProfileId(verifiedReport.thresholdProfile.id),
+    } : undefined,
     sources,
-    counts: { inputs: report.inputs.length, records: report.records.length, plans: report.plans.length, findings: report.findings.length },
+    counts: { inputs: verifiedReport.inputs.length, records: verifiedReport.records.length, plans: verifiedReport.plans.length, findings: verifiedReport.findings.length },
     outputs: [...outputPaths, ...(options.includeRaw ? [...sourcePaths.values()] : [])],
   };
   const diagnostics = {
     runId,
     processingErrors: options.processingErrors,
-    inputWarnings: report.inputs.flatMap((input) => input.warnings.map((warning) => ({ fileName: input.fileName, warning }))),
-    dataQualityWarnings: report.dataQuality.warnings,
-    notEvaluatedRules: report.dataQuality.notEvaluatedRules,
-    findingCaps: report.dataQuality.findingCaps ?? [],
+    inputWarnings: verifiedReport.inputs.flatMap((input) => input.warnings.map((warning) => ({ fileName: input.fileName, warning }))),
+    dataQualityWarnings: verifiedReport.dataQuality.warnings,
+    notEvaluatedRules: verifiedReport.dataQuality.notEvaluatedRules,
+    findingCaps: verifiedReport.dataQuality.findingCaps ?? [],
+    thresholdProfile: verifiedReport.thresholdProfile,
   };
   const archiveFiles: Record<string, Uint8Array> = {
     "manifest.json": strToU8(JSON.stringify(manifest, null, 2)),
     "results/analysis.sqleval.json": strToU8(JSON.stringify(output, null, 2)),
-    "results/findings.csv": strToU8(findingsCsv(output.findings, output.dataQuality.findingCaps)),
+    "results/findings.csv": strToU8(findingsCsv(output)),
     "results/report.html": strToU8(printableReport(output)),
     "normalized/activity.csv": strToU8(activityCsv(output.records)),
     "diagnostics/processing-log.json": strToU8(JSON.stringify(diagnostics, null, 2)),

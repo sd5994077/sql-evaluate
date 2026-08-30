@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SQL_EVALUATE_CAPTURED_AT=2026-08-29T01:32:10Z -->
+<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan" Version="1.539" Build="16.0.4165.4">
+  <BatchSequence>
+    <Batch>
+      <Statements>
+        <StmtSimple StatementText="SELECT TOP (500) pl.PickListId, pl.WaveId, pl.Status, pl.PickedQty, pl.UpdatedAt FROM dbo.PickList AS pl WHERE pl.WarehouseId = @p1 ORDER BY pl.UpdatedAt DESC" StatementId="1" StatementCompId="1" StatementType="SELECT" RetrievedFromCache="true" StatementSubTreeCost="486.21" StatementEstRows="500" StatementOptmLevel="FULL" QueryHash="0x7B3D0A1E9C2F4450" QueryPlanHash="0x1180C4E7A25F9B00" QueryStoreQueryId="990" QueryStorePlanId="311">
+          <StatementSetOptions QUOTED_IDENTIFIER="true" ARITHABORT="true" CONCAT_NULL_YIELDS_NULL="true" ANSI_NULLS="true" ANSI_PADDING="true" ANSI_WARNINGS="true" NUMERIC_ROUNDABORT="false" />
+          <QueryPlan DegreeOfParallelism="1" MemoryGrant="737280" CachedPlanSize="80" CompileTime="11" CompileCPU="11" CompileMemory="3520">
+            <MemoryGrantInfo SerialRequiredMemory="4096" SerialDesiredMemory="737280" RequiredMemory="4096" DesiredMemory="737280" RequestedMemory="737280" GrantWaitTime="0" GrantedMemory="737280" MaxUsedMemory="38912" MaxQueryMemory="1048576" />
+            <Warnings>
+              <SpillToTempDb SpillLevel="1" />
+            </Warnings>
+            <RelOp NodeId="0" PhysicalOp="Sort" LogicalOp="TopN Sort" EstimateRows="500" EstimateIO="0" EstimateCPU="3.7" AvgRowSize="47" EstimatedTotalSubtreeCost="486.21" TableCardinality="4180000" Parallel="false" EstimateRebinds="0" EstimateRewinds="0">
+              <OutputList>
+                <ColumnReference Database="[WarehouseDB]" Schema="[dbo]" Table="[PickList]" Alias="[pl]" Column="PickListId" />
+                <ColumnReference Database="[WarehouseDB]" Schema="[dbo]" Table="[PickList]" Alias="[pl]" Column="WaveId" />
+                <ColumnReference Database="[WarehouseDB]" Schema="[dbo]" Table="[PickList]" Alias="[pl]" Column="Status" />
+                <ColumnReference Database="[WarehouseDB]" Schema="[dbo]" Table="[PickList]" Alias="[pl]" Column="PickedQty" />
+                <ColumnReference Database="[WarehouseDB]" Schema="[dbo]" Table="[PickList]" Alias="[pl]" Column="UpdatedAt" />
+              </OutputList>
+              <RunTimeInformation>
+                <RunTimeCountersPerThread Thread="0" ActualRows="500" ActualRowsRead="921444" ActualEndOfScans="1" ActualExecutions="1" ActualExecutionMode="Row" ActualElapsedms="5121" ActualCPUms="4870" ActualScans="0" ActualLogicalReads="0" />
+              </RunTimeInformation>
+              <TopSort Distinct="false" Rows="500">
+                <OrderBy>
+                  <OrderByColumn Ascending="false">
+                    <ColumnReference Database="[WarehouseDB]" Schema="[dbo]" Table="[PickList]" Alias="[pl]" Column="UpdatedAt" />
+                  </OrderByColumn>
+                </OrderBy>
+                <RelOp NodeId="1" PhysicalOp="Clustered Index Scan" LogicalOp="Clustered Index Scan" EstimateRows="1180" EstimateIO="402.6" EstimateCPU="45.9" AvgRowSize="47" EstimatedTotalSubtreeCost="448.5" TableCardinality="4180000" Parallel="false" EstimateRebinds="0" EstimateRewinds="0">
+                  <OutputList>
+                    <ColumnReference Database="[WarehouseDB]" Schema="[dbo]" Table="[PickList]" Alias="[pl]" Column="PickListId" />
+                    <ColumnReference Database="[WarehouseDB]" Schema="[dbo]" Table="[PickList]" Alias="[pl]" Column="WaveId" />
+                    <ColumnReference Database="[WarehouseDB]" Schema="[dbo]" Table="[PickList]" Alias="[pl]" Column="Status" />
+                    <ColumnReference Database="[WarehouseDB]" Schema="[dbo]" Table="[PickList]" Alias="[pl]" Column="PickedQty" />
+                    <ColumnReference Database="[WarehouseDB]" Schema="[dbo]" Table="[PickList]" Alias="[pl]" Column="UpdatedAt" />
+                  </OutputList>
+                  <RunTimeInformation>
+                    <RunTimeCountersPerThread Thread="0" ActualRows="921444" ActualRowsRead="921444" ActualEndOfScans="1" ActualExecutions="1" ActualExecutionMode="Row" ActualElapsedms="1980" ActualCPUms="1740" ActualScans="1" ActualLogicalReads="118203" ActualPhysicalReads="9044" ActualReadAheads="7211" />
+                  </RunTimeInformation>
+                  <IndexScan Ordered="false" ForcedIndex="false" ForceScan="false" NoExpandHint="false" Storage="RowStore">
+                    <DefinedValues>
+                      <DefinedValue>
+                        <ColumnReference Database="[WarehouseDB]" Schema="[dbo]" Table="[PickList]" Alias="[pl]" Column="PickListId" />
+                      </DefinedValue>
+                      <DefinedValue>
+                        <ColumnReference Database="[WarehouseDB]" Schema="[dbo]" Table="[PickList]" Alias="[pl]" Column="WaveId" />
+                      </DefinedValue>
+                      <DefinedValue>
+                        <ColumnReference Database="[WarehouseDB]" Schema="[dbo]" Table="[PickList]" Alias="[pl]" Column="Status" />
+                      </DefinedValue>
+                      <DefinedValue>
+                        <ColumnReference Database="[WarehouseDB]" Schema="[dbo]" Table="[PickList]" Alias="[pl]" Column="PickedQty" />
+                      </DefinedValue>
+                      <DefinedValue>
+                        <ColumnReference Database="[WarehouseDB]" Schema="[dbo]" Table="[PickList]" Alias="[pl]" Column="UpdatedAt" />
+                      </DefinedValue>
+                    </DefinedValues>
+                    <Object Database="[WarehouseDB]" Schema="[dbo]" Table="[PickList]" Index="[PK_PickList]" Alias="[pl]" IndexKind="Clustered" Storage="RowStore" />
+                    <Predicate>
+                      <ScalarOperator ScalarString="[WarehouseDB].[dbo].[PickList].[WarehouseId] as [pl].[WarehouseId]=[@p1]">
+                        <Compare CompareOp="EQ">
+                          <ScalarOperator>
+                            <Identifier>
+                              <ColumnReference Database="[WarehouseDB]" Schema="[dbo]" Table="[PickList]" Alias="[pl]" Column="WarehouseId" />
+                            </Identifier>
+                          </ScalarOperator>
+                          <ScalarOperator>
+                            <Identifier>
+                              <ColumnReference Column="@p1" />
+                            </Identifier>
+                          </ScalarOperator>
+                        </Compare>
+                      </ScalarOperator>
+                    </Predicate>
+                  </IndexScan>
+                </RelOp>
+              </TopSort>
+            </RelOp>
+          </QueryPlan>
+        </StmtSimple>
+      </Statements>
+    </Batch>
+  </BatchSequence>
+</ShowPlanXML>

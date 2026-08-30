@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
-import type { AnalysisReport, Finding, Severity, WhoIsActiveRecord } from "./types";
+import type { AnalysisReport, AnalysisWorkerRequest, Finding, Severity, ThresholdProfile, WhoIsActiveRecord } from "./types";
 import { DropZone } from "./components/DropZone";
 import { DeepAnalysisWorkspace } from "./components/DeepAnalysisWorkspace";
 import { FindingDrawer } from "./components/FindingDrawer";
 import { SeverityBadge } from "./components/SeverityBadge";
+import { ThresholdProfileManager } from "./components/ThresholdProfileManager";
 import type { DeepAnalysisCase } from "./deepAnalysis/types";
 import { addEvidenceFiles, createDeepAnalysisCase, createDeepCaseArchive, openDeepCaseArchive } from "./deepAnalysis/case";
 import { deepAnalysisProfileForFinding } from "./deepAnalysis/profile";
@@ -12,13 +13,15 @@ import { downloadBlob, findingsCsv, printableReport, redactReport, validateRepor
 import { createRunArchive } from "./lib/runBundle";
 import { formatDuration, formatNumber, formatTempdbPages } from "./lib/utils";
 import { APP_VERSION } from "./version";
+import { activateThresholdProfile, addThresholdProfile, DEFAULT_THRESHOLD_PROFILE_ENTRY, deleteThresholdProfile, loadThresholdProfileState } from "./rules/thresholdProfileStore";
+import type { ThresholdProfileEntry } from "./rules/thresholdProfileStore";
 
 type Tab = "findings" | "deep" | "activity" | "plans" | "quality";
 type ActivitySort = "session" | "collected" | "status" | "wait" | "blocker" | "runtime" | "cpu" | "reads" | "writes" | "tempdb";
 const tabs: Tab[] = ["findings", "deep", "activity", "plans", "quality"];
 const ACTIVITY_PAGE_SIZE = 100;
-const severities: Severity[] = ["High", "Medium", "Low", "Informational", "Not Evaluated"];
-const severityOrder: Record<Severity, number> = { High: 5, Medium: 4, Low: 3, Informational: 2, "Not Evaluated": 1 };
+const severities: Severity[] = ["Critical", "High", "Medium", "Low", "Informational", "Not Evaluated"];
+const severityOrder: Record<Severity, number> = { Critical: 6, High: 5, Medium: 4, Low: 3, Informational: 2, "Not Evaluated": 1 };
 
 function activityValue(record: WhoIsActiveRecord, sort: ActivitySort): string | number | null {
   if (sort === "session") return record.sessionId;
@@ -31,6 +34,15 @@ function activityValue(record: WhoIsActiveRecord, sort: ActivitySort): string | 
   if (sort === "reads") return record.reads;
   if (sort === "writes") return record.writes;
   return record.tempdbCurrentPages;
+}
+
+function browserProfileStorage(): Storage | null {
+  try {
+    const storage = window.localStorage;
+    return storage && typeof storage.getItem === "function" && typeof storage.setItem === "function" ? storage : null;
+  } catch {
+    return null;
+  }
 }
 
 function SignalRail({ report }: { report: AnalysisReport }) {
@@ -46,6 +58,7 @@ function SignalRail({ report }: { report: AnalysisReport }) {
 
 function App() {
   const [report, setReport] = useState<AnalysisReport | null>(null);
+  const [reportImportedLegacy, setReportImportedLegacy] = useState(false);
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState("");
   const [errors, setErrors] = useState<string[]>([]);
@@ -65,6 +78,11 @@ function App() {
   const [deepCase, setDeepCase] = useState<DeepAnalysisCase | null>(null);
   const [deepFiles, setDeepFiles] = useState<File[]>([]);
   const [deepBusy, setDeepBusy] = useState(false);
+  const [profileEntries, setProfileEntries] = useState<ThresholdProfileEntry[]>([DEFAULT_THRESHOLD_PROFILE_ENTRY]);
+  const [activeProfile, setActiveProfile] = useState<ThresholdProfileEntry>(DEFAULT_THRESHOLD_PROFILE_ENTRY);
+  const [profileWarnings, setProfileWarnings] = useState<string[]>([]);
+  const [profileReady, setProfileReady] = useState(false);
+  const profileStorageRef = useRef<Storage | null>(null);
   const workerRef = useRef<Worker | null>(null);
   const closeDrawer = useCallback(() => setSelected(null), []);
   const resetReportView = useCallback(() => {
@@ -80,6 +98,46 @@ function App() {
   }, []);
 
   useEffect(() => () => workerRef.current?.terminate(), []);
+  useEffect(() => {
+    let mounted = true;
+    const storage = browserProfileStorage();
+    profileStorageRef.current = storage;
+    void loadThresholdProfileState(storage).then((state) => {
+      if (!mounted) return;
+      setProfileEntries(state.entries);
+      setActiveProfile(state.active);
+      setProfileWarnings(state.warnings);
+      setProfileReady(true);
+    });
+    return () => { mounted = false; };
+  }, []);
+
+  const activateProfile = (entry: ThresholdProfileEntry) => {
+    try {
+      activateThresholdProfile(profileStorageRef.current, entry);
+      setActiveProfile(entry);
+    } catch (error) {
+      if (entry.builtIn) setActiveProfile(DEFAULT_THRESHOLD_PROFILE_ENTRY);
+      setProfileWarnings((current) => [...current, `Profile selection was not persisted: ${error instanceof Error ? error.message : "Local storage failed."}`]);
+    }
+  };
+
+  const storeProfile = async (profile: ThresholdProfile) => {
+    const result = await addThresholdProfile(profileStorageRef.current, profileEntries, profile);
+    if (result.added) setProfileEntries(result.entries);
+    return { entry: result.entry, added: result.added };
+  };
+
+  const removeProfile = (entry: ThresholdProfileEntry) => {
+    if (!confirm(`Delete ${entry.profile.name} (${entry.snapshot.id}@${entry.snapshot.version})?${entry.snapshot.digest === activeProfile.snapshot.digest ? " The built-in default will become active." : ""}`)) return;
+    try {
+      const next = deleteThresholdProfile(profileStorageRef.current, profileEntries, entry, activeProfile);
+      setProfileEntries(next.entries);
+      setActiveProfile(next.active);
+    } catch (error) {
+      setProfileWarnings((current) => [...current, `Profile deletion failed: ${error instanceof Error ? error.message : "Local storage failed."}`]);
+    }
+  };
 
   async function openDeepCase(file: File) {
     setDeepBusy(true);
@@ -109,7 +167,7 @@ function App() {
     if (reportFile) {
       if (files.length !== 1) { setErrors(["Open a saved .sqleval.json report by itself; other selected files were not analyzed."]); return; }
       if (reportFile.size > 100 * 1024 * 1024) { setErrors([`${reportFile.name}: saved reports are limited to 100 MB.`]); return; }
-      try { setReport(validateReport(JSON.parse(await reportFile.text()))); setSourceFiles([]); setDeepCase(null); setDeepFiles([]); setErrors([]); resetReportView(); setTab("findings"); }
+      try { const opened = await validateReport(JSON.parse(await reportFile.text())); setReport(opened); setReportImportedLegacy(!opened.thresholdProfile); setSourceFiles([]); setDeepCase(null); setDeepFiles([]); setErrors([]); resetReportView(); setTab("findings"); }
       catch (error) { setErrors([error instanceof Error ? error.message : "Report could not be opened."]); }
       return;
     }
@@ -122,12 +180,13 @@ function App() {
     let workerPhase = "starting the analysis worker";
     worker.onmessage = (event) => {
       if (event.data.type === "progress") { workerPhase = `processing ${event.data.fileName}`; setProgress(`Processed ${event.data.fileName}`); }
-      if (event.data.type === "complete") { setReport(event.data.report); setSourceFiles([...files]); setDeepCase(null); setDeepFiles([]); setErrors(event.data.errors); setLoading(false); setProgress(""); resetReportView(); setTab("findings"); worker.terminate(); workerRef.current = null; }
+      if (event.data.type === "complete") { setReport(event.data.report); setReportImportedLegacy(false); setSourceFiles([...files]); setDeepCase(null); setDeepFiles([]); setErrors(event.data.errors); setLoading(false); setProgress(""); resetReportView(); setTab("findings"); worker.terminate(); workerRef.current = null; }
       if (event.data.type === "error") { setErrors(event.data.errors); setLoading(false); setProgress(""); worker.terminate(); workerRef.current = null; }
     };
     worker.onerror = (event) => { event.preventDefault(); setErrors([event.message ? `Worker failed while ${workerPhase}: ${event.message}` : `Worker stopped while ${workerPhase}. Refresh the page and retry; if it repeats, export the browser console error.`]); setLoading(false); setProgress(""); worker.terminate(); workerRef.current = null; };
     worker.onmessageerror = () => { setErrors([`Worker response could not be read while ${workerPhase}. Refresh the page and retry.`]); setLoading(false); setProgress(""); worker.terminate(); workerRef.current = null; };
-    try { worker.postMessage({ files }); }
+    const request: AnalysisWorkerRequest = { files, thresholdProfile: activeProfile.snapshot };
+    try { worker.postMessage(request); }
     catch (error) { setErrors([`Worker input-transfer phase failed: ${error instanceof Error ? error.message : "The selected files could not be passed to local analysis."}`]); setLoading(false); setProgress(""); worker.terminate(); workerRef.current = null; }
   };
 
@@ -164,7 +223,7 @@ function App() {
   const activityPages = Math.max(1, Math.ceil(activityRows.length / ACTIVITY_PAGE_SIZE));
   const activityPageRows = activityRows.slice(activityPage * ACTIVITY_PAGE_SIZE, (activityPage + 1) * ACTIVITY_PAGE_SIZE);
   useEffect(() => { setActivityPage(0); }, [report, activityRecordIds, activitySession, activitySort, activityAscending]);
-  const high = report?.findings.filter((finding) => finding.severity === "High").length ?? 0;
+  const priority = report?.findings.filter((finding) => finding.severity === "Critical" || finding.severity === "High").length ?? 0;
   const highest = report ? [...report.findings].sort((a, b) => severityOrder[b.severity] - severityOrder[a.severity])[0]?.severity ?? "Not Evaluated" : "Not Evaluated";
   const collectionTimes = report ? report.records.map((record) => record.collectionTime).filter((value): value is string => Boolean(value)).sort() : [];
   const collectionSpan = collectionTimes.length > 1 ? (new Date(collectionTimes.at(-1)!).getTime() - new Date(collectionTimes[0]).getTime()) / 1000 : 0;
@@ -197,9 +256,10 @@ function App() {
 
   const exportReport = (kind: "json" | "csv" | "html") => {
     if (!report) return;
+    if (!report.thresholdProfile && !reportImportedLegacy) { setErrors((current) => [...current, "Export refused: the generated report has no resolved threshold profile."]); return; }
     const output = rawExport ? report : redactReport(report);
     if (kind === "json") downloadBlob("sql-evaluate-report.sqleval.json", JSON.stringify(output, null, 2), "application/json");
-    if (kind === "csv") downloadBlob("sql-evaluate-findings.csv", findingsCsv(output.findings, output.dataQuality.findingCaps), "text/csv;charset=utf-8");
+    if (kind === "csv") downloadBlob("sql-evaluate-findings.csv", findingsCsv(output), "text/csv;charset=utf-8");
     if (kind === "html") downloadBlob("sql-evaluate-report.html", printableReport(output), "text/html;charset=utf-8");
   };
 
@@ -207,7 +267,7 @@ function App() {
     if (!report || savingRun) return;
     setSavingRun(true);
     try {
-      const archive = await createRunArchive(report, sourceFiles, { includeRaw: rawExport, processingErrors: errors });
+      const archive = await createRunArchive(report, sourceFiles, { includeRaw: rawExport, processingErrors: errors, allowLegacyReport: reportImportedLegacy });
       const archiveBytes = new Uint8Array(archive.bytes.byteLength);
       archiveBytes.set(archive.bytes);
       downloadBlob(archive.fileName, archiveBytes.buffer, "application/zip");
@@ -265,13 +325,14 @@ function App() {
     <header className="topbar"><div className="brand"><span className="brand-mark"><i /><i /><i /></span><div><strong>SQL Evaluate</strong><span>Activity &amp; plan triage</span></div></div><div className="privacy-chip"><span className="pulse" />LOCAL ONLY · 127.0.0.1</div></header>
     <main>
       <section className="hero"><div><div className="eyebrow">SQL SERVER DIAGNOSTIC CONSOLE</div><h1>Turn a capture into<br /><em>an investigation.</em></h1><p>Load <code>sp_WhoIsActive</code> output or a Showplan file. Your data stays in this browser session; findings show their evidence and limits.</p></div><div className="hero-grid" aria-hidden="true"><span>BLOCK</span><b>CHAIN</b><span>WAIT</span><b>TYPE</b><span>PLAN</span><b>XML</b></div></section>
-      <DropZone disabled={loading} onFiles={analyzeFiles} />
+      <DropZone disabled={loading || !profileReady} onFiles={analyzeFiles} />
+      <ThresholdProfileManager entries={profileEntries} active={activeProfile} reportProfile={report?.thresholdProfile} ready={profileReady} warnings={profileWarnings} onActivate={activateProfile} onStore={storeProfile} onDelete={removeProfile} />
       {loading && <div className="processing"><span className="loader" /><div><strong>Analyzing locally</strong><p>{progress}</p></div></div>}
       {errors.length > 0 && <div className="error-panel"><strong>Some input could not be processed</strong>{errors.map((error) => <p key={error}>{error}</p>)}</div>}
       {report && <>
-        <section className="report-meta"><div><span>ANALYSIS / {new Date(report.createdAt).toLocaleDateString()}</span><strong>{report.inputs.map((input) => input.fileName).join(" + ")}</strong></div><div className="report-actions"><label className="raw-toggle"><input type="checkbox" checked={rawExport} onChange={(event) => { if (event.target.checked && !confirm("Raw exports and run archives may contain the original capture, SQL text, host names, logins, database names, and parameter values. Include them?")) return; setRawExport(event.target.checked); }} />Include raw details</label><button className="button button-save" disabled={savingRun} onClick={saveRun}>{savingRun ? "Preparing ZIP…" : "Save Run ZIP"}</button><button className="button" onClick={() => exportReport("json")}>JSON</button><button className="button" onClick={() => exportReport("csv")}>CSV</button><button className="button" onClick={() => exportReport("html")}>Print HTML</button></div></section>
+        <section className="report-meta"><div><span>ANALYSIS / {new Date(report.createdAt).toLocaleDateString()}</span><strong>{report.inputs.map((input) => input.fileName).join(" + ")}</strong><small className="report-profile">{report.thresholdProfile ? `Profile ${report.thresholdProfile.id}@${report.thresholdProfile.version} · ${report.thresholdProfile.digest.slice(0, 12)}` : "Legacy report · threshold profile not recorded"}</small></div><div className="report-actions"><label className="raw-toggle"><input type="checkbox" checked={rawExport} onChange={(event) => { if (event.target.checked && !confirm("Raw exports and run archives may contain the original capture, SQL text, host names, logins, database names, and parameter values. Include them?")) return; setRawExport(event.target.checked); }} />Include raw details</label><button className="button button-save" disabled={savingRun} onClick={saveRun}>{savingRun ? "Preparing ZIP…" : "Save Run ZIP"}</button><button className="button" onClick={() => exportReport("json")}>JSON</button><button className="button" onClick={() => exportReport("csv")}>CSV</button><button className="button" onClick={() => exportReport("html")}>Print HTML</button></div></section>
         <section className="kpi-grid">
-          <div className="kpi kpi-primary"><span>HIGHEST CONCERN</span><strong><SeverityBadge severity={highest} /></strong><small>{high ? `${high} item${high === 1 ? "" : "s"} need priority review` : "No high-severity finding"}</small></div>
+          <div className="kpi kpi-primary"><span>HIGHEST CONCERN</span><strong><SeverityBadge severity={highest} /></strong><small>{priority ? `${priority} item${priority === 1 ? " needs" : "s need"} priority review` : "No critical or high-severity finding"}</small></div>
           <div className="kpi"><span>ACTIVITY ROWS</span><strong>{report.records.length.toLocaleString()}</strong><small>{new Set(report.records.map((record) => record.collectionTime).filter(Boolean)).size} collection points</small></div>
           <div className="kpi"><span>CAPTURE WINDOW</span><strong>{formatDuration(collectionSpan)}</strong><small>{report.inputs.length} source file{report.inputs.length === 1 ? "" : "s"}</small></div>
           <div className="kpi"><span>PLAN DOCUMENTS</span><strong>{report.plans.length}</strong><small>{report.plans.reduce((sum, plan) => sum + plan.statements.length, 0)} statements inspected</small></div>
@@ -284,7 +345,7 @@ function App() {
         {tab === "deep" && <section id="panel-deep" role="tabpanel" aria-labelledby="tab-deep" tabIndex={0} className="tabpanel"><DeepAnalysisWorkspace deepCase={deepCase} recommendations={deepRecommendations} busy={deepBusy} onStart={startDeepAnalysis} onImport={importDeepEvidence} onSave={saveDeepCase} onOpen={openDeepCase} /></section>}
         {tab === "activity" && <section id="panel-activity" role="tabpanel" aria-labelledby="tab-activity" tabIndex={0} className="data-panel"><div className="section-intro"><div><span>RAW ACTIVITY</span><strong>{activityRecordIds ? `${activityRows.length} affected row${activityRows.length === 1 ? "" : "s"}` : `${activityRows.length} normalized row${activityRows.length === 1 ? "" : "s"}`}</strong></div><p>Filter, sort, and page through normalized evidence. Original columns remain available in JSON export.</p></div><div className="activity-controls"><label>Session<input aria-label="Filter activity by session" placeholder="SPID" value={activitySession} onChange={(event) => setActivitySession(event.target.value)} /></label>{activityRecordIds && <button type="button" className="button" onClick={() => setActivityRecordIds(null)}>Clear affected-row filter</button>}<span>Rows {activityRows.length ? activityPage * ACTIVITY_PAGE_SIZE + 1 : 0}–{Math.min((activityPage + 1) * ACTIVITY_PAGE_SIZE, activityRows.length)} of {activityRows.length}</span></div><div className="raw-scroll"><table><thead><tr><th>{activitySortButton("Session", "session")}</th><th>{activitySortButton("Collected", "collected")}</th><th>{activitySortButton("Status", "status")}</th><th>{activitySortButton("Wait", "wait")}</th><th>{activitySortButton("Blocker", "blocker")}</th><th>{activitySortButton("Runtime", "runtime")}</th><th>{activitySortButton("CPU", "cpu")}</th><th>{activitySortButton("Reads", "reads")}</th><th>{activitySortButton("Writes", "writes")}</th><th>{activitySortButton("Tempdb current", "tempdb")}</th></tr></thead><tbody>{activityPageRows.map((record) => <tr key={record.id}><td>{record.sessionId ?? "—"}</td><td>{record.collectionTime ? new Date(record.collectionTime).toLocaleString() : "—"}</td><td>{record.status ?? "—"}</td><td>{record.wait?.type ?? "—"}</td><td>{record.blockingSessionId ?? "—"}</td><td>{formatDuration(record.durationSeconds)}</td><td>{formatNumber(record.cpuMs)}</td><td>{formatNumber(record.reads)}</td><td>{formatNumber(record.writes)}</td><td>{formatTempdbPages(record.tempdbCurrentPages)}</td></tr>)}</tbody></table>{!activityRows.length && <div className="empty-table">No activity rows match this filter.</div>}</div><div className="activity-pagination"><button type="button" className="button" disabled={activityPage === 0} onClick={() => setActivityPage((current) => Math.max(0, current - 1))}>Previous</button><span>Page {activityPage + 1} of {activityPages}</span><button type="button" className="button" disabled={activityPage + 1 >= activityPages} onClick={() => setActivityPage((current) => Math.min(activityPages - 1, current + 1))}>Next</button></div></section>}
         {tab === "plans" && <section id="panel-plans" role="tabpanel" aria-labelledby="tab-plans" tabIndex={0} className="data-panel"><div className="section-intro"><div><span>SHOWPLAN INVENTORY</span><strong>{report.plans.length ? `${report.plans.length} parsed document${report.plans.length === 1 ? "" : "s"}` : "No plan supplied"}</strong></div><p>Runtime evidence is available only in actual plans.</p></div><div className="plan-list">{report.plans.map((plan) => <article key={plan.id}><div><span className={plan.isActual ? "actual" : "estimated"}>{plan.isActual ? "ACTUAL" : "ESTIMATED"}</span><strong>{plan.fileName}</strong><small>Showplan {plan.version ?? "unknown version"}</small></div><b>{plan.statements.length}<small> statements</small></b>{plan.statements.slice(0, 4).map((statement) => <p key={statement.id}>{statement.statementText || statement.statementType}</p>)}</article>)}{!report.plans.length && <div className="empty-table">Import a .sqlplan or XML file, or include the query_plan column in a capture.</div>}</div></section>}
-        {tab === "quality" && <section id="panel-quality" role="tabpanel" aria-labelledby="tab-quality" tabIndex={0} className="quality-grid"><div className="data-panel"><div className="section-intro"><div><span>SCHEMA COVERAGE</span><strong>{report.dataQuality.presentColumns.length} recognized columns</strong></div></div><div className="tag-list">{report.dataQuality.presentColumns.map((column) => <span className="present" key={column}>{column}</span>)}</div><details><summary>{report.dataQuality.missingColumns.length} optional columns not supplied</summary><div className="tag-list">{report.dataQuality.missingColumns.map((column) => <span key={column}>{column}</span>)}</div></details></div><div className="data-panel"><div className="section-intro"><div><span>LIMITATIONS, WARNINGS &amp; AUDIT</span><strong>What this report could not establish</strong></div></div><ul className="quality-list">{report.dataQuality.notEvaluatedRules.map((rule) => <li key={rule}><b>Not evaluated</b>{rule}</li>)}{report.dataQuality.warnings.map((warning) => <li key={warning}><b>Input warning</b>{warning}</li>)}{(report.dataQuality.findingCaps ?? []).map((cap) => <li key={cap.ruleId}><b>Finding cap</b>{cap.suppressedCount} additional {cap.ruleId} findings were suppressed after retaining {cap.retainedCount}, ordered by {cap.order.toLowerCase()}.</li>)}{(report.dataQuality.suppressedSignals ?? []).map((signal) => <li key={signal}><b>Suppressed signal</b>{signal}</li>)}{report.dataQuality.unknownColumns.map((column) => <li key={column}><b>Preserved unknown column</b>{column}</li>)}</ul>{!report.dataQuality.notEvaluatedRules.length && !report.dataQuality.warnings.length && !(report.dataQuality.findingCaps ?? []).length && !(report.dataQuality.suppressedSignals ?? []).length && !report.dataQuality.unknownColumns.length && <div className="empty-table">No data-quality limitations were detected.</div>}</div></section>}
+        {tab === "quality" && <section id="panel-quality" role="tabpanel" aria-labelledby="tab-quality" tabIndex={0} className="quality-grid"><div className="data-panel"><div className="section-intro"><div><span>SCHEMA COVERAGE</span><strong>{report.dataQuality.presentColumns.length} recognized columns</strong></div></div><div className="tag-list">{report.dataQuality.presentColumns.map((column) => <span className="present" key={column}>{column}</span>)}</div><details><summary>{report.dataQuality.missingColumns.length} optional columns not supplied</summary><div className="tag-list">{report.dataQuality.missingColumns.map((column) => <span key={column}>{column}</span>)}</div></details></div><div className="data-panel"><div className="section-intro"><div><span>LIMITATIONS, WARNINGS &amp; AUDIT</span><strong>What this report could not establish</strong></div></div><ul className="quality-list">{report.dataQuality.notEvaluatedRules.map((rule) => <li key={rule}><b>Not evaluated</b>{rule}</li>)}{report.dataQuality.warnings.map((warning) => <li key={warning}><b>Input warning</b>{warning}</li>)}{(report.dataQuality.findingCaps ?? []).map((cap) => <li key={cap.ruleId}><b>Finding cap</b>{cap.suppressedCount} additional {cap.ruleId} findings were suppressed after retaining {cap.retainedCount}, ordered by {cap.order.toLowerCase()}.</li>)}{(report.dataQuality.suppressedSignals ?? []).map((signal) => <li key={signal}><b>Suppressed signal</b>{signal}</li>)}{report.dataQuality.unknownColumns.map((column) => <li key={column}><b>Preserved unknown column</b>{column}</li>)}</ul>{!report.dataQuality.notEvaluatedRules.length && !report.dataQuality.warnings.length && !(report.dataQuality.findingCaps ?? []).length && !(report.dataQuality.suppressedSignals ?? []).length && !report.dataQuality.unknownColumns.length && <div className="empty-table">No data-quality limitations were detected.</div>}</div><div className="data-panel profile-audit-panel"><div className="section-intro"><div><span>THRESHOLD PROFILE / THIS REPORT</span><strong>{report.thresholdProfile ? report.thresholdProfile.name : "Not recorded"}</strong></div></div>{report.thresholdProfile ? <><p>{report.thresholdProfile.id}@{report.thresholdProfile.version} · {report.thresholdProfile.id.startsWith("builtin.") ? "Built-in" : "Custom"}</p><code>{report.thresholdProfile.digest}</code><details><summary>View exact resolved thresholds</summary><pre>{JSON.stringify(report.thresholdProfile.thresholds, null, 2)}</pre></details></> : <p>Legacy report — threshold profile not recorded.</p>}</div></section>}
       </>}
       {deepCase && !report && <DeepAnalysisWorkspace deepCase={deepCase} recommendations={[]} busy={deepBusy} onStart={startDeepAnalysis} onImport={importDeepEvidence} onSave={saveDeepCase} onOpen={openDeepCase} />}
       {!report && !loading && !deepCase && <section className="trust-row"><div><span>01</span><strong>Private by construction</strong><p>No telemetry, uploads, database connection, or automatic remediation.</p></div><div><span>02</span><strong>Evidence before advice</strong><p>Severity and confidence are separate; missing data stays missing.</p></div><div><span>03</span><strong>Built for handoff</strong><p>Export a redacted report with evidence and source links.</p></div></section>}

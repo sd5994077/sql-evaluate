@@ -1,11 +1,3 @@
-export const RULE_THRESHOLDS = {
-  blocking: { highVictims: 5, highPersistenceSeconds: 60, mediumPersistenceSeconds: 15 },
-  resources: { highDurationSeconds: 900, mediumDurationSeconds: 300, highPercentile: 0.95, mediumPercentile: 0.9, repeatedCaptures: 3 },
-  waits: { actionableDurationMs: 1000, highPersistenceSeconds: 60 },
-  transactions: { highAgeSeconds: 900, mediumAgeSeconds: 300 },
-  plans: { mediumEstimateRatio: 10, highEstimateRatio: 100, mediumRows: 10_000, highRows: 100_000, mediumMissingIndexImpact: 70, mediumGrantWasteKb: 128 * 1024, highGrantWasteKb: 512 * 1024, mediumGrantRatio: 4, highGrantRatio: 8 },
-} as const;
-
 export const REFERENCES = {
   blocking: [{ label: "Microsoft: Understand and resolve blocking", url: "https://learn.microsoft.com/en-us/troubleshoot/sql/database-engine/performance/understand-resolve-blocking" }],
   blockingSessionId: [{ label: "Microsoft: blocking_session_id special values", url: "https://learn.microsoft.com/en-us/sql/relational-databases/system-dynamic-management-views/sys-dm-exec-requests-transact-sql" }],

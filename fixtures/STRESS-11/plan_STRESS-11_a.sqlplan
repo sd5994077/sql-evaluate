@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan" Version="1.539" Build="16.0.4165.4">
+  <BatchSequence>
+    <Batch>
+      <Statements>
+        <StmtSimple StatementText="SELECT t.* FROM dbo.BigTable t WHERE t.Bucket = @p1" StatementId="1" StatementCompId="1" StatementType="SELECT" RetrievedFromCache="true" StatementSubTreeCost="300.0" StatementEstRows="1000" StatementOptmLevel="FULL" QueryHash="0xC101C101C101C101" QueryPlanHash="0xD101D101D101D101">
+          <QueryPlan DegreeOfParallelism="1" CachedPlanSize="40" CompileTime="5" CompileCPU="5" CompileMemory="512">
+            <MemoryGrantInfo SerialRequiredMemory="1024" SerialDesiredMemory="1024" />
+            <RelOp NodeId="0" PhysicalOp="Clustered Index Scan" LogicalOp="Clustered Index Scan" EstimateRows="1000" EstimatedRowsRead="1000" EstimateIO="250.0" EstimateCPU="50.0" AvgRowSize="200" EstimatedTotalSubtreeCost="300.0" TableCardinality="8000000" Parallel="false" EstimateRebinds="0" EstimateRewinds="0">
+              <OutputList>
+                <ColumnReference Database="[BigDb]" Schema="[dbo]" Table="[BigTable]" Alias="[t]" Column="Id" />
+              </OutputList>
+              <RunTimeInformation>
+                <RunTimeCountersPerThread Thread="0" ActualRows="100000" ActualRowsRead="100000" ActualExecutions="1" ActualElapsedms="4200" ActualCPUms="3900" ActualLogicalReads="256000" />
+              </RunTimeInformation>
+              <IndexScan Ordered="false" ForcedIndex="false" ForceScan="false" NoExpandHint="false" Storage="RowStore">
+                <DefinedValues>
+                  <DefinedValue><ColumnReference Database="[BigDb]" Schema="[dbo]" Table="[BigTable]" Alias="[t]" Column="Id" /></DefinedValue>
+                </DefinedValues>
+                <Object Database="[BigDb]" Schema="[dbo]" Table="[BigTable]" Index="[PK_BigTable]" Alias="[t]" IndexKind="Clustered" Storage="RowStore" />
+              </IndexScan>
+            </RelOp>
+          </QueryPlan>
+        </StmtSimple>
+        <StmtSimple StatementText="SELECT m.* FROM dbo.MidTable m WHERE m.Kind = @p1" StatementId="2" StatementCompId="2" StatementType="SELECT" RetrievedFromCache="true" StatementSubTreeCost="30.0" StatementEstRows="500" StatementOptmLevel="FULL" QueryHash="0xC202C202C202C202" QueryPlanHash="0xD202D202D202D202">
+          <QueryPlan DegreeOfParallelism="1" CachedPlanSize="40" CompileTime="4" CompileCPU="4" CompileMemory="512">
+            <MemoryGrantInfo SerialRequiredMemory="1024" SerialDesiredMemory="1024" />
+            <RelOp NodeId="0" PhysicalOp="Clustered Index Scan" LogicalOp="Clustered Index Scan" EstimateRows="500" EstimatedRowsRead="500" EstimateIO="25.0" EstimateCPU="5.0" AvgRowSize="120" EstimatedTotalSubtreeCost="30.0" TableCardinality="900000" Parallel="false" EstimateRebinds="0" EstimateRewinds="0">
+              <OutputList>
+                <ColumnReference Database="[BigDb]" Schema="[dbo]" Table="[MidTable]" Alias="[m]" Column="Id" />
+              </OutputList>
+              <RunTimeInformation>
+                <RunTimeCountersPerThread Thread="0" ActualRows="6000" ActualRowsRead="6000" ActualExecutions="1" ActualElapsedms="140" ActualCPUms="110" ActualLogicalReads="4100" />
+              </RunTimeInformation>
+              <IndexScan Ordered="false" ForcedIndex="false" ForceScan="false" NoExpandHint="false" Storage="RowStore">
+                <DefinedValues>
+                  <DefinedValue><ColumnReference Database="[BigDb]" Schema="[dbo]" Table="[MidTable]" Alias="[m]" Column="Id" /></DefinedValue>
+                </DefinedValues>
+                <Object Database="[BigDb]" Schema="[dbo]" Table="[MidTable]" Index="[PK_MidTable]" Alias="[m]" IndexKind="Clustered" Storage="RowStore" />
+              </IndexScan>
+            </RelOp>
+          </QueryPlan>
+        </StmtSimple>
+        <StmtSimple StatementText="SELECT s.* FROM dbo.SmallTable s WHERE s.Flag = @p1" StatementId="3" StatementCompId="3" StatementType="SELECT" RetrievedFromCache="true" StatementSubTreeCost="12.0" StatementEstRows="100" StatementOptmLevel="FULL" QueryHash="0xC303C303C303C303" QueryPlanHash="0xD303D303D303D303">
+          <QueryPlan DegreeOfParallelism="1" CachedPlanSize="40" CompileTime="3" CompileCPU="3" CompileMemory="512">
+            <MemoryGrantInfo SerialRequiredMemory="1024" SerialDesiredMemory="1024" />
+            <RelOp NodeId="0" PhysicalOp="Clustered Index Scan" LogicalOp="Clustered Index Scan" EstimateRows="100" EstimatedRowsRead="100" EstimateIO="10.0" EstimateCPU="2.0" AvgRowSize="90" EstimatedTotalSubtreeCost="12.0" TableCardinality="300000" Parallel="false" EstimateRebinds="0" EstimateRewinds="0">
+              <OutputList>
+                <ColumnReference Database="[BigDb]" Schema="[dbo]" Table="[SmallTable]" Alias="[s]" Column="Id" />
+              </OutputList>
+              <RunTimeInformation>
+                <RunTimeCountersPerThread Thread="0" ActualRows="9000" ActualRowsRead="9000" ActualExecutions="1" ActualElapsedms="120" ActualCPUms="95" ActualLogicalReads="2600" />
+              </RunTimeInformation>
+              <IndexScan Ordered="false" ForcedIndex="false" ForceScan="false" NoExpandHint="false" Storage="RowStore">
+                <DefinedValues>
+                  <DefinedValue><ColumnReference Database="[BigDb]" Schema="[dbo]" Table="[SmallTable]" Alias="[s]" Column="Id" /></DefinedValue>
+                </DefinedValues>
+                <Object Database="[BigDb]" Schema="[dbo]" Table="[SmallTable]" Index="[PK_SmallTable]" Alias="[s]" IndexKind="Clustered" Storage="RowStore" />
+              </IndexScan>
+            </RelOp>
+          </QueryPlan>
+        </StmtSimple>
+      </Statements>
+    </Batch>
+  </BatchSequence>
+</ShowPlanXML>

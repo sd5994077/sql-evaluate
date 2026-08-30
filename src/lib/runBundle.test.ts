@@ -2,6 +2,8 @@ import { File } from "node:buffer";
 import { describe, expect, it } from "vitest";
 import { strFromU8, unzipSync } from "fflate";
 import type { AnalysisReport } from "../types";
+import { DEFAULT_THRESHOLD_PROFILE_SNAPSHOT } from "../rules/thresholdProfiles";
+import { findingsCsv, printableReport, redactReport } from "./report";
 import { createRunArchive } from "./runBundle";
 
 const report: AnalysisReport = {
@@ -13,6 +15,7 @@ const report: AnalysisReport = {
   plans: [],
   findings: [],
   dataQuality: { presentColumns: ["session_id", "collection_time"], missingColumns: [], unknownColumns: [], warnings: [], notEvaluatedRules: [], findingCaps: [{ ruleId: "WIA-WAIT", retainedCount: 24, suppressedCount: 6, order: "Descending diagnostic impact" }] },
+  thresholdProfile: DEFAULT_THRESHOLD_PROFILE_SNAPSHOT,
 };
 
 describe("run archive", () => {
@@ -36,9 +39,25 @@ describe("run archive", () => {
       "results/report.html",
     ]);
     expect(strFromU8(files["results/analysis.sqleval.json"])).not.toContain("domain\\\\person");
-    expect(strFromU8(files["manifest.json"])).toContain('"rawIncluded": false');
+    const manifest = JSON.parse(strFromU8(files["manifest.json"]));
+    const processingLog = JSON.parse(strFromU8(files["diagnostics/processing-log.json"]));
+    expect(manifest.rawIncluded).toBe(false);
+    expect(manifest.thresholdProfile).toEqual({ id: DEFAULT_THRESHOLD_PROFILE_SNAPSHOT.id, name: DEFAULT_THRESHOLD_PROFILE_SNAPSHOT.name, version: DEFAULT_THRESHOLD_PROFILE_SNAPSHOT.version, digest: DEFAULT_THRESHOLD_PROFILE_SNAPSHOT.digest, builtIn: true });
+    expect(processingLog.thresholdProfile).toEqual(DEFAULT_THRESHOLD_PROFILE_SNAPSHOT);
+    expect(manifest.sources[0]).toMatchObject({ fileName: "capture.csv", included: false, sha256: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    expect(files["source/capture.csv"]).toBeUndefined();
+    for (const path of ["results/analysis.sqleval.json", "results/findings.csv", "results/report.html", "normalized/activity.csv"]) {
+      const content = strFromU8(files[path]);
+      expect(content).not.toContain("SELECT 'secret'");
+      expect(content).not.toContain("PrivateDb");
+      expect(content).not.toContain("domain\\person");
+    }
     expect(strFromU8(files["results/findings.csv"])).toContain("6 additional WIA-WAIT findings were suppressed after retaining 24");
+    expect(strFromU8(files["results/findings.csv"])).toBe(findingsCsv(redactReport(report)));
     expect(strFromU8(files["results/report.html"])).toContain("6 additional WIA-WAIT findings were suppressed after retaining 24");
+    expect(strFromU8(files["results/report.html"])).toBe(printableReport(redactReport(report)));
+    expect(strFromU8(files["results/findings.csv"])).toContain("THRESHOLD-PROFILE");
+    expect(strFromU8(files["results/report.html"])).toContain(DEFAULT_THRESHOLD_PROFILE_SNAPSHOT.digest);
     expect(strFromU8(files["diagnostics/processing-log.json"])).toContain('"findingCaps"');
   });
 
@@ -54,5 +73,20 @@ describe("run archive", () => {
 
     expect(files["source/capture.csv"]).toBeDefined();
     expect(strFromU8(files["diagnostics/processing-log.json"])).toContain("one optional file was skipped");
+  });
+
+  it("allows an explicitly identified legacy report without inventing profile metadata", async () => {
+    const { thresholdProfile: _profile, ...legacy } = report;
+    await expect(createRunArchive(legacy, [], { includeRaw: false, processingErrors: [] })).rejects.toThrow(/cannot be archived/);
+    const archive = await createRunArchive(legacy, [], { includeRaw: false, processingErrors: [], allowLegacyReport: true, runId: "legacy", exportedAt: "2026-08-25T08:46:00Z" });
+    const files = unzipSync(archive.bytes);
+    expect(archive.manifest.thresholdProfile).toBeUndefined();
+    expect(strFromU8(files["results/findings.csv"])).toContain("Legacy report — threshold profile not recorded.");
+    expect(strFromU8(files["diagnostics/processing-log.json"])).not.toContain('"thresholdProfile"');
+  });
+
+  it("refuses to archive a report with tampered profile provenance", async () => {
+    const tampered = { ...report, thresholdProfile: { ...DEFAULT_THRESHOLD_PROFILE_SNAPSHOT, name: "Tampered" } };
+    await expect(createRunArchive(tampered, [], { includeRaw: false, processingErrors: [] })).rejects.toThrow(/digest does not match/);
   });
 });

@@ -1,11 +1,12 @@
 import { WHOISACTIVE_COLUMNS } from "../schema";
-import type { AnalysisInput, AnalysisReport, BlockingContext, BlockingParticipant, CaptureRecommendation, Confidence, DataQuality, DiagnosticTool, Finding, FindingCapDisclosure, FindingTimeline, PlanDocument, PlanStatement, RelatedFindingLink, RuleContext, RuleDefinition, Severity, WhoIsActiveRecord } from "../types";
+import type { AnalysisInput, AnalysisReport, BlockingContext, BlockingParticipant, CaptureRecommendation, Confidence, DataQuality, DiagnosticTool, Finding, FindingCapDisclosure, FindingQualification, FindingTimeline, PlanDocument, PlanStatement, RelatedFindingLink, RuleContext, RuleDefinition, Severity, SupplementalEvidenceSource, ThresholdProfileSnapshot, WhoIsActiveRecord } from "../types";
 import { parseShowplan } from "../lib/showplan";
 import { differenceSeconds, formatDuration, formatNumber, formatTempdbPages, makeId, percentile } from "../lib/utils";
-import { REFERENCES, RULE_THRESHOLDS } from "./catalog";
+import { REFERENCES } from "./catalog";
+import { DEFAULT_THRESHOLD_PROFILE_SNAPSHOT, validateThresholdProfileSnapshotShape } from "./thresholdProfiles";
 import { deepAnalysisProfileForFinding } from "../deepAnalysis/profile";
 
-const severityRank: Record<Severity, number> = { High: 5, Medium: 4, Low: 3, Informational: 2, "Not Evaluated": 1 };
+const severityRank: Record<Severity, number> = { Critical: 6, High: 5, Medium: 4, Low: 3, Informational: 2, "Not Evaluated": 1 };
 const confidenceRank: Record<Confidence, number> = { High: 3, Medium: 2, Low: 1 };
 const specialBlockingOwners: Record<number, { title: string; meaning: string; severity: Severity }> = {
   [-2]: { title: "Orphaned distributed transaction owner (-2) observed", meaning: "The blocking resource is owned by an orphaned distributed transaction.", severity: "Medium" },
@@ -27,6 +28,24 @@ function diagnosticTool(name: string, purpose: string, command?: string, caution
 
 function planContext(statement: PlanStatement): Finding["evidence"] {
   return [{ label: "Statement type", value: statement.statementType }, { label: "Plan evidence", value: statement.isActual ? "Actual plan" : "Estimated plan" }];
+}
+
+const SAFE_OPTIMIZER_TOKEN = /^[A-Za-z0-9_.:-]{1,128}$/;
+const REDACTED_OPTIMIZER_VALUE = "[redacted optimizer value]";
+
+function optimizerQualificationValue(value: string): string {
+  return SAFE_OPTIMIZER_TOKEN.test(value) ? value : REDACTED_OPTIMIZER_VALUE;
+}
+
+function planQualifications(statement: PlanStatement, plan: PlanDocument): FindingQualification[] {
+  const common = { planId: plan.id, statementId: statement.id };
+  const qualifications: FindingQualification[] = [];
+  if (statement.compileTimeMs !== null && statement.compileTimeMs !== undefined && Number.isFinite(statement.compileTimeMs) && statement.compileTimeMs >= 0) qualifications.push({ kind: "Compile time", disposition: "Context only", value: `${statement.compileTimeMs} ms`, reason: "Reported by Showplan for this statement; no universal compile-time threshold was evaluated.", ...common });
+  if (statement.compileCpuMs !== null && statement.compileCpuMs !== undefined && Number.isFinite(statement.compileCpuMs) && statement.compileCpuMs >= 0) qualifications.push({ kind: "Compile CPU", disposition: "Context only", value: `${statement.compileCpuMs} ms`, reason: "Reported by Showplan for this statement; magnitude alone was not interpreted as CPU pressure.", ...common });
+  if (statement.compileMemoryKb !== null && statement.compileMemoryKb !== undefined && Number.isFinite(statement.compileMemoryKb) && statement.compileMemoryKb >= 0) qualifications.push({ kind: "Compile memory", disposition: "Context only", value: `${statement.compileMemoryKb} KB`, reason: "Reported compile memory is context only and is separate from execution workspace memory grants.", ...common });
+  if (statement.earlyAbortReason) qualifications.push({ kind: "Optimizer early abort", disposition: "Observed", value: optimizerQualificationValue(statement.earlyAbortReason), reason: "Showplan reported an optimizer early-abort token; its causal significance was not evaluated.", ...common });
+  if (statement.optimizationLevel) qualifications.push({ kind: "Optimization level", disposition: "Observed", value: optimizerQualificationValue(statement.optimizationLevel), reason: "Showplan reported an optimization-level token; the value was not ranked or interpreted.", ...common });
+  return qualifications;
 }
 
 function buildTimeline(metric: string, unit: FindingTimeline["unit"], observations: Array<{ capturedAt: string | null; value: number | null }>): FindingTimeline | undefined {
@@ -234,7 +253,7 @@ function splitSnapshotsByConsecutiveCapture(snapshots: BlockingSnapshot[], allRe
 
 const blockingRule: RuleDefinition = {
   id: "WIA-BLOCKING", title: "Blocking chains", category: "Blocking", requiredColumns: ["blocking_session_id"], optionalColumns: ["blocked_session_count", "status", "open_tran_count", "collection_time"],
-  description: "Finds blocked requests, head blockers, persistence, and sleeping open transactions.", thresholds: RULE_THRESHOLDS.blocking, references: [...REFERENCES.blocking, ...REFERENCES.whoIsActive, ...REFERENCES.blitzWho],
+  description: "Finds blocked requests, head blockers, persistence, and sleeping open transactions.", references: [...REFERENCES.blocking, ...REFERENCES.whoIsActive, ...REFERENCES.blitzWho],
   evaluate(context) {
     const specialFindings = [...group(context.records.filter((record) => (record.blockingSessionId ?? 0) < 0), (record) => String(record.blockingSessionId)).entries()].map(([codeText, records]) => {
       const code = Number(codeText);
@@ -259,11 +278,11 @@ const blockingRule: RuleDefinition = {
       const maxReported = Math.max(0, ...episode.map((snapshot) => snapshot.victimCount));
       const sleepingOpen = blockerRows.some((record) => record.status === "sleeping" && (record.openTranCount ?? 0) > 0);
       const maximumVictimWait = Math.max(0, ...episode.flatMap((snapshot) => snapshot.participants.map((participant) => participant.waitDurationMs ?? 0)));
-      const transientLowImpact = maxReported === 1 && observation.persistence === 0 && maximumVictimWait < RULE_THRESHOLDS.waits.actionableDurationMs;
-      const severity: Severity = sleepingOpen || maxReported >= RULE_THRESHOLDS.blocking.highVictims || observation.persistence >= RULE_THRESHOLDS.blocking.highPersistenceSeconds ? "High"
-        : maxReported >= 2 || observation.persistence >= RULE_THRESHOLDS.blocking.mediumPersistenceSeconds ? "Medium" : transientLowImpact ? "Informational" : "Low";
+      const transientLowImpact = maxReported === 1 && observation.persistence === 0 && maximumVictimWait < context.thresholds.blocking.transientVictimWaitMs;
+      const severity: Severity = sleepingOpen || maxReported >= context.thresholds.blocking.highVictims || observation.persistence >= context.thresholds.blocking.highPersistenceSeconds ? "High"
+        : maxReported >= context.thresholds.blocking.mediumVictims || observation.persistence >= context.thresholds.blocking.mediumPersistenceSeconds ? "Medium" : transientLowImpact ? "Informational" : "Low";
       const observationText = observation.persistence > 0 ? `observed for ${formatDuration(observation.persistence)}` : "observed in one capture";
-      const severityReason = sleepingOpen ? "High: sleeping blocker with an open transaction" : maxReported >= RULE_THRESHOLDS.blocking.highVictims ? `High: ${maxReported} blocked sessions (threshold ${RULE_THRESHOLDS.blocking.highVictims})` : `${severity}: blocking scope and persistence`;
+      const severityReason = sleepingOpen ? "High: sleeping blocker with an open transaction" : maxReported >= context.thresholds.blocking.highVictims ? `High: ${maxReported} blocked sessions (threshold ${context.thresholds.blocking.highVictims})` : `${severity}: blocking scope and persistence`;
       const blockingTimeline = buildTimeline("Blocked sessions", "sessions", episode.map((snapshot) => ({ capturedAt: snapshot.collectionTime, value: snapshot.victimCount })));
       const missing = missingColumns(context, ["locks", "tran_start_time", "query_plan"]);
       if (!context.presentColumns.has("sql_text") && !context.presentColumns.has("sql_command")) missing.push("sql_text or sql_command");
@@ -273,6 +292,14 @@ const blockingRule: RuleDefinition = {
       const rootWait = rootRecord?.wait;
       const maxChainDepth = Math.max(...episode.map((snapshot) => snapshot.maxChainDepth));
       const chainComplete = episode.every((snapshot) => snapshot.chainComplete);
+      const transientWaitRecord = episodeRows.find((record) => (record.blockingSessionId ?? 0) > 0 && record.wait);
+      const transientWaitDuration = Math.max(maximumVictimWait, transientWaitRecord?.wait?.durationMs ?? 0);
+      const findingTitle = transientLowImpact && transientWaitRecord?.wait?.type
+        ? `Isolated transient ${transientWaitRecord.wait.type} blocking observation`
+        : `Session ${blockerId} is the root blocker`;
+      const findingSummary = transientLowImpact
+        ? `One downstream session was blocked in one capture; longest reported wait ${formatNumber(transientWaitDuration)} ms.`
+        : `${maxReported} downstream session${maxReported === 1 ? "" : "s"} reported across a chain up to ${maxChainDepth} level${maxChainDepth === 1 ? "" : "s"} deep; ${observationText}.`;
       const limitations = [
         observationKeys.size === 1 ? "Only one capture point was supplied, so persistence cannot be confirmed." : null,
         !blockerRows.length ? "The blocker row was not present; the head blocker is inferred from victim rows." : null,
@@ -286,7 +313,7 @@ const blockingRule: RuleDefinition = {
           : rootWait
             ? [`The root blocker is waiting on ${rootWait.type}; investigate that ${rootWait.category.toLowerCase()} dependency before tuning or terminating victim sessions.`, "Correlate its SQL text, plan, transaction owner, and retained locks with the wait resource.", "Resolve the root dependency first, then verify that the downstream chain clears."]
             : ["Inspect the root blocker's SQL text, transaction state, retained locks, and application call path.", "Confirm whether the root is active, sleeping, or waiting before choosing a tuning or transaction response.", "Act on the root cause rather than terminating downstream victim sessions."];
-      return finding(this.id, severity, blockerRows.length && chainComplete ? "High" : "Medium", this.category, `Session ${blockerId} is the root blocker`, `${maxReported} downstream session${maxReported === 1 ? "" : "s"} reported across a chain up to ${maxChainDepth} level${maxChainDepth === 1 ? "" : "s"} deep; ${observationText}.`, {
+      return finding(this.id, severity, blockerRows.length && chainComplete ? "High" : "Medium", this.category, findingTitle, findingSummary, {
         explanation: sleepingOpen ? "The head blocker is sleeping with an open transaction, so locks may remain until the transaction is committed, rolled back, or the session ends." : transientLowImpact ? "One sub-second blocking observation was captured and did not persist. Keep it as context rather than treating it as a sustained incident." : observation.persistence > 0 ? "Sustained blocking reduces concurrency and can lead to timeouts. Investigate the head blocker before acting on victim sessions." : "A wide blocking fan-out can reduce concurrency and trigger timeouts even when only one capture is available. Confirm persistence before intervening.",
         confidenceReason: blockerRows.length && chainComplete ? `High confidence because the root blocker row and ${Math.max(1, busiest.participants.length - 1)} downstream participant${busiest.participants.length - 1 === 1 ? " were" : "s were"} connected through the captured blocking graph.` : blockerRows.length ? "Medium confidence because the blocker row was captured, but at least one observation did not contain the complete path back to the root." : "Medium confidence because victim rows identify the blocking path, but the root blocker row was not supplied.",
         limitations,
@@ -307,7 +334,7 @@ const blockingRule: RuleDefinition = {
 
 const resourceRule: RuleDefinition = {
   id: "WIA-RESOURCE", title: "Long-running resource consumers", category: "Resources", requiredColumns: ["start_time", "collection_time"], optionalColumns: ["CPU", "reads", "writes", "used_memory", "tempdb_current"],
-  description: "Ranks long-running requests by capture-relative CPU, I/O, memory, and tempdb consumption.", thresholds: RULE_THRESHOLDS.resources, references: [...REFERENCES.plans, ...REFERENCES.blitzFirst, ...REFERENCES.blitzCache],
+  description: "Ranks long-running requests by capture-relative CPU, I/O, memory, and tempdb consumption.", references: [...REFERENCES.plans, ...REFERENCES.blitzFirst, ...REFERENCES.blitzCache],
   evaluate(context) {
     const metrics = (record: WhoIsActiveRecord) => [record.cpuMs, record.reads, record.writes, record.usedMemoryPages, record.tempdbCurrentPages].filter((value): value is number => value !== null);
     const captureDistributions = new Map<string, number[][]>();
@@ -320,7 +347,7 @@ const resourceRule: RuleDefinition = {
     }
     const episodes = [...group(context.records.filter((record) => {
       if (["THREADPOOL", "RESOURCE_SEMAPHORE_QUERY_COMPILE"].includes(record.wait?.type.toUpperCase() ?? "")) return false;
-      return (record.durationSeconds ?? 0) >= 30 && metrics(record).some((value) => Math.abs(value) > 0);
+      return (record.durationSeconds ?? 0) >= context.thresholds.resources.minimumDurationSeconds && metrics(record).some((value) => Math.abs(value) > 0);
     }), episodeKey).values()];
     return episodes.map((records) => {
       const peakDuration = Math.max(...records.map((record) => record.durationSeconds ?? 0));
@@ -335,9 +362,9 @@ const resourceRule: RuleDefinition = {
         return { capturedAt: record.collectionTime, value: Math.max(...pointValues.map((value, index) => value === null ? 0 : percentile(pointDistributions[index], value) * 100)) };
       }));
       let severity: Severity | null = null;
-      if (peakDuration >= RULE_THRESHOLDS.resources.highDurationSeconds && peakPercentile >= RULE_THRESHOLDS.resources.highPercentile) severity = "High";
-      else if (peakDuration >= RULE_THRESHOLDS.resources.mediumDurationSeconds && peakPercentile >= RULE_THRESHOLDS.resources.mediumPercentile) severity = "Medium";
-      else if (peakDuration >= 60 && peakPercentile >= RULE_THRESHOLDS.resources.highPercentile && repeated >= RULE_THRESHOLDS.resources.repeatedCaptures) severity = "Low";
+      if (peakDuration >= context.thresholds.resources.highDurationSeconds && peakPercentile >= context.thresholds.resources.highPercentile) severity = "High";
+      else if (peakDuration >= context.thresholds.resources.mediumDurationSeconds && peakPercentile >= context.thresholds.resources.mediumPercentile) severity = "Medium";
+      else if (peakDuration >= context.thresholds.resources.lowDurationSeconds && peakPercentile >= context.thresholds.resources.highPercentile && repeated >= context.thresholds.resources.lowRepeatedCaptures) severity = "Low";
       if (!severity) return null;
       const observation = times(records);
       const missing = missingColumns(context, ["query_plan"]);
@@ -346,9 +373,9 @@ const resourceRule: RuleDefinition = {
         "Resource values are ranked against this capture; server capacity and a normal workload baseline were not supplied.",
         missing.length ? "No execution plan was supplied to connect resource use to operators or estimates." : null,
       ].filter((value): value is string => Boolean(value));
-      return finding(this.id, severity, repeated >= 2 ? "Medium" : "Low", this.category, `Session ${latest.sessionId ?? "unknown"} is a sustained resource outlier`, `Runtime ${formatDuration(peakDuration)}; capture-relative percentile ${(peakPercentile * 100).toFixed(0)} across ${repeated} capture${repeated === 1 ? "" : "s"}.`, {
+      return finding(this.id, severity, repeated >= context.thresholds.resources.mediumConfidenceCaptures ? "Medium" : "Low", this.category, `Session ${latest.sessionId ?? "unknown"} is a sustained resource outlier`, `Runtime ${formatDuration(peakDuration)}; capture-relative percentile ${(peakPercentile * 100).toFixed(0)} across ${repeated} capture${repeated === 1 ? "" : "s"}.`, {
         explanation: "Resource counters can be cumulative and server capacity is unknown. This finding combines duration, relative rank, and persistence instead of treating a raw counter as a universal threshold.",
-        confidenceReason: repeated >= 2 ? `Medium confidence because the session remained elevated across ${repeated} capture points, but no server baseline was supplied.` : "Low confidence because this is a one-capture, workload-relative outlier without a server baseline.",
+        confidenceReason: repeated >= context.thresholds.resources.mediumConfidenceCaptures ? `Medium confidence because the session remained elevated across ${repeated} capture points, but no server baseline was supplied.` : "Low confidence because this is a one-capture, workload-relative outlier without a server baseline.",
         limitations,
         timeline: resourceTimeline,
         nextCapture: captureRecommendation("Measure rates and capture the plan", repeated === 1 ? "Confirm that the same request remains a top consumer and prefer delta values over cumulative totals." : missing.length ? "The resource pattern repeats, but an execution plan is needed to connect it to operators, estimates, or spills." : "Repeat a short delta sample during the slowdown and compare it with a normal window.", whoIsActiveCommand(["@get_task_info = 2", "@delta_interval = 5", "@get_plans = 1", "@get_memory_info = 1"]), ["Per-interval CPU and I/O rates", "Current task and parallel-worker context", "Execution-plan operators and warnings", "Workspace-memory grant context"], "Plans and task details add collection overhead. Keep the diagnostic interval short on a busy server."),
@@ -364,9 +391,70 @@ const resourceRule: RuleDefinition = {
   },
 };
 
+function metricValues(source: SupplementalEvidenceSource, metric: string): number[] {
+  return source.samples.map((sample) => sample.metrics[metric]).filter((value): value is number => Number.isFinite(value));
+}
+
+const schedulerPressureRule: RuleDefinition = {
+  id: "WIA-SCHEDULER-PRESSURE", title: "CPU and scheduler pressure", category: "CPU", requiredColumns: ["status", "wait_info", "CPU", "collection_time"], optionalColumns: ["blocking_session_id"],
+  description: "Correlates a runnable CPU-consuming request with sustained scheduler-yield waits and rising server scheduler counters.", references: [...REFERENCES.waits, ...REFERENCES.whoIsActive, ...REFERENCES.blitzFirst],
+  evaluate(context) {
+    const sources = context.supplementalEvidence.filter((source) => source.kind === "Scheduler counters");
+    if (!sources.length) return [];
+    const rootSessionIds = new Set(blockingSnapshots(context.records).map((snapshot) => snapshot.rootSessionId));
+    const candidates = [...group(context.records.filter((record) => record.sessionId !== null
+      && rootSessionIds.has(record.sessionId)
+      && record.status?.toLowerCase() === "runnable"
+      && record.wait?.type.toUpperCase() === "SOS_SCHEDULER_YIELD"), episodeKey).values()]
+      .sort((left, right) => right.length - left.length);
+    const records = candidates[0];
+    if (!records?.length) return [];
+    const cpuValues = records.map((record) => record.cpuMs).filter((value): value is number => value !== null && Number.isFinite(value));
+    if (cpuValues.length < context.thresholds.waits.corroboratingCaptures || cpuValues.at(-1)! <= cpuValues[0]) return [];
+    const source = sources.find((item) => {
+      const processor = metricValues(item, "processor_pct_time");
+      const signal = metricValues(item, "signal_wait_time_pct");
+      const runnable = metricValues(item, "runnable_tasks_count");
+      return processor.length >= context.thresholds.waits.corroboratingCaptures
+        && signal.length >= context.thresholds.waits.corroboratingCaptures
+        && runnable.length >= context.thresholds.waits.corroboratingCaptures
+        && processor.at(-1)! > processor[0]
+        && signal.at(-1)! > signal[0]
+        && runnable.at(-1)! > runnable[0];
+    });
+    if (!source) return [];
+    const processor = metricValues(source, "processor_pct_time");
+    const signal = metricValues(source, "signal_wait_time_pct");
+    const runnable = metricValues(source, "runnable_tasks_count");
+    const sessionId = records[0].sessionId!;
+    const observation = times(records);
+    return [finding(this.id, "High", "High", this.category, "Sustained CPU and scheduler pressure", `Runnable session ${sessionId} repeatedly yielded to the scheduler while processor use, signal-wait share, and runnable-task count all increased.`, {
+      explanation: "The runnable head blocker is actively consuming CPU rather than sleeping or waiting on a lock. Rising server scheduler counters show that its longer lock-holding time is occurring during CPU pressure, making the blocking chain a downstream effect rather than the primary condition.",
+      confidenceReason: "High confidence because repeated SOS_SCHEDULER_YIELD observations, increasing request CPU, and three independent rising scheduler counters converge on the same interval.",
+      limitations: ["The supplied evidence does not determine whether this statement alone caused the instance-wide CPU pressure or was competing with unrelated concurrent work.", "No actual execution plan was supplied to connect CPU consumption to a specific operator or access path."],
+      nextCapture: captureRecommendation("Separate query CPU from instance-wide pressure", "Capture the runnable statement's actual plan and short scheduler deltas during the same interval.", whoIsActiveCommand(["@get_task_info = 2", "@delta_interval = 5", "@get_plans = 1"]), ["Actual plan for the runnable root statement", "Per-scheduler runnable queues", "Signal-wait and CPU deltas", "Concurrent workload attribution"], "Plan collection adds overhead; keep the sample short."),
+      remediation: ["Capture and review an actual plan for the runnable root statement before changing indexes or server settings.", "Compare the same scheduler counters with a normal window to separate a query-plan problem from insufficient workload headroom."],
+      evidence: [
+        { label: "Runnable root session", value: String(sessionId) },
+        { label: "Scheduler-yield observations", value: String(records.length) },
+        { label: "Request CPU movement", value: `${formatNumber(cpuValues[0])} → ${formatNumber(cpuValues.at(-1)!)} ms` },
+        { label: "Processor movement", value: `${formatNumber(processor[0])}% → ${formatNumber(processor.at(-1)!)}%` },
+        { label: "Signal-wait movement", value: `${formatNumber(signal[0])}% → ${formatNumber(signal.at(-1)!)}%` },
+        { label: "Runnable tasks movement", value: `${formatNumber(runnable[0])} → ${formatNumber(runnable.at(-1)!)}` },
+      ],
+      references: this.references,
+      affectedRecordIds: records.map((record) => record.id),
+      firstSeen: observation.first,
+      lastSeen: observation.last,
+      persistenceSeconds: observation.persistence,
+      impact: 250_000 + observation.persistence,
+    })];
+  },
+};
+
 const waitRule: RuleDefinition = {
   id: "WIA-WAIT", title: "Actionable waits", category: "Waits", requiredColumns: ["wait_info"], optionalColumns: ["collection_time", "blocking_session_id"],
-  description: "Classifies current request waits and avoids elevating known benign queue waits in isolation.", thresholds: RULE_THRESHOLDS.waits, references: [...REFERENCES.waits, ...REFERENCES.whoIsActive, ...REFERENCES.blitzFirst],
+  description: "Classifies current request waits and avoids elevating known benign queue waits in isolation.", references: [...REFERENCES.waits, ...REFERENCES.whoIsActive, ...REFERENCES.blitzFirst],
   evaluate(context) {
     const specialTypes = new Set(["THREADPOOL", "RESOURCE_SEMAPHORE_QUERY_COMPILE"]);
     const specialized = [...group(context.records.filter((record) => specialTypes.has(record.wait?.type.toUpperCase() ?? "")), (record) => `${record.sourceId}:${record.wait!.type.toUpperCase()}`).values()].map((records) => {
@@ -379,15 +467,26 @@ const waitRule: RuleDefinition = {
       const waitTimeline = buildTimeline("Reported wait duration", "milliseconds", records.map((record) => ({ capturedAt: record.collectionTime, value: record.wait?.durationMs ?? null })));
       if (type === "THREADPOOL") {
         const noTaskCount = records.filter((record) => originalNumber(record, ["tasks", "task_count"]) === 0).length;
-        const high = captures >= 2 && concurrent >= 2;
-        return finding("WIA-WORKER-EXHAUSTION", high ? "High" : "Medium", captures >= 2 ? "High" : "Medium", "Worker threads", "Worker-thread pool exhaustion indicated by persistent THREADPOOL waits", `${records.length} queued request observations span ${captures} captures, with peak visible concurrency ${concurrent}.`, {
+        const workerSource = context.supplementalEvidence.find((source) => source.kind === "Worker counters");
+        const workerCeilingObserved = workerSource?.samples.some((sample) => {
+          const active = sample.metrics.active_worker_threads;
+          const maximum = sample.metrics.max_worker_threads;
+          const queue = sample.metrics.work_queue_count;
+          return Number.isFinite(active) && Number.isFinite(maximum) && Number.isFinite(queue) && active >= maximum && queue > 0;
+        }) ?? false;
+        const activeWorkers = workerSource ? metricValues(workerSource, "active_worker_threads") : [];
+        const maxWorkers = workerSource ? metricValues(workerSource, "max_worker_threads") : [];
+        const workQueue = workerSource ? metricValues(workerSource, "work_queue_count") : [];
+        const high = captures >= context.thresholds.workerExhaustion.highCaptures && concurrent >= context.thresholds.workerExhaustion.highConcurrency;
+        const highConfidence = workerCeilingObserved || captures >= context.thresholds.workerExhaustion.highConfidenceCaptures;
+        return finding("WIA-WORKER-EXHAUSTION", workerCeilingObserved ? "Critical" : high ? "High" : "Medium", highConfidence ? "High" : "Medium", "Worker threads", "Worker-thread pool exhaustion indicated by persistent THREADPOOL waits", `${records.length} queued request observations span ${captures} captures, with peak visible concurrency ${concurrent}.`, {
           explanation: "THREADPOOL means a request is waiting for an available worker. Repeated observations with growing concurrency are an instance-level availability risk even when an individual wait duration is short.",
-          confidenceReason: captures >= 2 ? "High confidence in worker starvation because THREADPOOL recurs across capture points and concurrent sessions." : "Medium confidence because THREADPOOL is explicit, but persistence needs another sample.",
-          limitations: ["The capture establishes worker starvation; configured worker ceiling and work-queue counters are still needed to quantify the server-wide limit."],
+          confidenceReason: workerCeilingObserved ? "High confidence because THREADPOOL recurs while supplemental counters show active workers reaching the configured ceiling and the work queue growing." : highConfidence ? "High confidence in worker starvation because THREADPOOL recurs across capture points and concurrent sessions." : "Medium confidence because THREADPOOL is explicit, but persistence needs another sample.",
+          limitations: workerCeilingObserved ? ["The evidence confirms worker exhaustion but does not distinguish overlapping jobs, a connection burst, or workers retained by other long-running requests."] : ["The capture establishes worker starvation; configured worker ceiling and work-queue counters are still needed to quantify the server-wide limit."],
           timeline: waitTimeline,
           nextCapture: captureRecommendation("Confirm worker exhaustion", "Correlate THREADPOOL recurrence with the configured worker ceiling and queued work.", "SELECT scheduler_id, current_workers_count, active_workers_count, work_queue_count FROM sys.dm_os_schedulers WHERE status = 'VISIBLE ONLINE';\nSELECT name, value_in_use FROM sys.configurations WHERE name = 'max worker threads';", ["Active and configured worker counts", "Work queue by visible scheduler", "Repeated THREADPOOL requests", "Upstream concurrency source"], "Run briefly during the incident; SQL Evaluate never executes this command."),
           remediation: ["Reduce or gate the incoming concurrency burst after confirming its source.", "Investigate long-lived requests or blocking that may be retaining workers; do not raise max worker threads without workload and platform review."],
-          evidence: [{ label: "Wait", value: type }, { label: "Observations", value: String(records.length) }, { label: "Captures", value: String(captures) }, { label: "Peak visible concurrency", value: String(concurrent) }, { label: "Maximum native task count", value: maximumNativeTaskCount ? String(maximumNativeTaskCount) : "Not supplied" }, { label: "Zero-task rows", value: String(noTaskCount) }, { label: "Maximum wait", value: `${formatNumber(maximumWait)} ms` }],
+          evidence: [{ label: "Wait", value: type }, { label: "Observations", value: String(records.length) }, { label: "Captures", value: String(captures) }, { label: "Peak visible concurrency", value: String(concurrent) }, { label: "Maximum native task count", value: maximumNativeTaskCount ? String(maximumNativeTaskCount) : "Not supplied" }, { label: "Zero-task rows", value: String(noTaskCount) }, { label: "Maximum wait", value: `${formatNumber(maximumWait)} ms` }, { label: "Worker ceiling observed", value: workerCeilingObserved ? "Yes" : "Not supplied" }, ...(workerSource ? [{ label: "Peak active workers", value: formatNumber(Math.max(0, ...activeWorkers)) }, { label: "Configured worker ceiling", value: formatNumber(Math.max(0, ...maxWorkers)) }, { label: "Peak work queue", value: formatNumber(Math.max(0, ...workQueue)) }] : [])],
           references: this.references, affectedRecordIds: records.map((record) => record.id), firstSeen: observation.first, lastSeen: observation.last, persistenceSeconds: observation.persistence, impact: 100_000 + concurrent * 100 + observation.persistence,
         });
       }
@@ -395,15 +494,23 @@ const waitRule: RuleDefinition = {
       const variants = new Set(texts.map((value) => value.replace(/\s+/g, " ").trim())).size;
       const shapes = new Set(texts.map(statementShape)).size;
       const uncachedPlans = context.plans.flatMap((plan) => plan.statements).filter((statement) => statement.retrievedFromCache === false).length;
-      const severity: Severity = captures >= 3 && concurrent >= 4 ? "High" : "Medium";
-      return finding("WIA-COMPILE-PRESSURE", severity, captures >= 2 && variants > 1 ? "High" : "Medium", "Compilation", "Compilation-memory and plan-cache pressure", `${records.length} RESOURCE_SEMAPHORE_QUERY_COMPILE observations span ${captures} captures; ${variants} statement variants reduce to ${shapes} structural shape${shapes === 1 ? "" : "s"}.`, {
+      const compileSource = context.supplementalEvidence.find((source) => source.kind === "Compilation counters");
+      const compilationRates = compileSource ? metricValues(compileSource, "sql_compilations_per_sec") : [];
+      const batchRates = compileSource ? metricValues(compileSource, "batch_requests_per_sec") : [];
+      const compileWaiters = compileSource ? metricValues(compileSource, "resource_semaphore_query_compile_waiting_tasks") : [];
+      const cacheHit = compileSource ? metricValues(compileSource, "cache_hit_ratio_plan_cache_pct") : [];
+      const maximumCompilationRatio = Math.max(0, ...compilationRates.map((value, index) => batchRates[index] > 0 ? value / batchRates[index] : 0));
+      const countersCorroborate = Boolean(compileSource && maximumCompilationRatio >= 0.1 && Math.max(0, ...compileWaiters) > 0 && cacheHit.length > 1 && cacheHit.at(-1)! < cacheHit[0]);
+      const severity: Severity = captures >= context.thresholds.compilePressure.highCaptures && concurrent >= context.thresholds.compilePressure.highConcurrency ? "High" : "Medium";
+      const highConfidence = countersCorroborate || captures >= context.thresholds.compilePressure.highConfidenceCaptures && variants >= context.thresholds.compilePressure.highConfidenceVariants;
+      return finding("WIA-COMPILE-PRESSURE", severity, highConfidence ? "High" : "Medium", "Compilation", "Compilation-memory and plan-cache pressure", `${records.length} RESOURCE_SEMAPHORE_QUERY_COMPILE observations span ${captures} captures; ${variants} statement variants reduce to ${shapes} structural shape${shapes === 1 ? "" : "s"}.`, {
         explanation: "RESOURCE_SEMAPHORE_QUERY_COMPILE is a compile-memory semaphore, not an execution memory-grant wait. Repeated literal variants of one statement shape support an ad-hoc compilation-pressure diagnosis.",
-        confidenceReason: captures >= 2 && variants > 1 ? "High confidence because the compile-specific wait persists while many literal variants share the same statement shape." : "Medium confidence because the compile-specific wait is explicit but plan-cache attribution needs more evidence.",
+        confidenceReason: countersCorroborate ? "High confidence because the compile-specific wait and literal variants are corroborated by a high compilation-to-batch ratio, compile-semaphore waiters, and a falling plan-cache hit ratio." : highConfidence ? "High confidence because the compile-specific wait persists while many literal variants share the same statement shape." : "Medium confidence because the compile-specific wait is explicit but plan-cache attribution needs more evidence.",
         limitations: ["The evidence does not establish whether application parameterization, database parameterization settings, or generated SQL caused the literal variants."],
         timeline: waitTimeline,
         nextCapture: captureRecommendation("Confirm compilation and single-use plan pressure", "Measure compilations relative to batches and inspect the plan cache for single-use ad-hoc plans.", "SELECT counter_name, cntr_value FROM sys.dm_os_performance_counters WHERE object_name LIKE '%:SQL Statistics%' AND counter_name IN ('Batch Requests/sec','SQL Compilations/sec','SQL Re-Compilations/sec');\nSELECT objtype, usecounts, COUNT(*) AS plans, SUM(size_in_bytes) AS bytes FROM sys.dm_exec_cached_plans GROUP BY objtype, usecounts;", ["Compilation-to-batch movement", "Single-use ad-hoc plan count and size", "Cache-hit movement", "Compile-semaphore waiting tasks"], "Take at least two bounded counter samples; these counters require delta interpretation."),
         remediation: ["Confirm the source of literal SQL and prefer parameterized execution where appropriate.", "Evaluate forced parameterization or optimize for ad hoc workloads only after workload-wide testing."],
-        evidence: [{ label: "Wait", value: type }, { label: "Observations", value: String(records.length) }, { label: "Captures", value: String(captures) }, { label: "Peak visible concurrency", value: String(concurrent) }, { label: "Maximum native task count", value: maximumNativeTaskCount ? String(maximumNativeTaskCount) : "Not supplied" }, { label: "Statement variants", value: String(variants) }, { label: "Structural shapes", value: String(shapes) }, { label: "Uncached supplied plans", value: String(uncachedPlans) }, { label: "Maximum wait", value: `${formatNumber(maximumWait)} ms` }],
+        evidence: [{ label: "Wait", value: type }, { label: "Observations", value: String(records.length) }, { label: "Captures", value: String(captures) }, { label: "Peak visible concurrency", value: String(concurrent) }, { label: "Maximum native task count", value: maximumNativeTaskCount ? String(maximumNativeTaskCount) : "Not supplied" }, { label: "Statement variants", value: String(variants) }, { label: "Structural shapes", value: String(shapes) }, { label: "Uncached supplied plans", value: String(uncachedPlans) }, { label: "Maximum wait", value: `${formatNumber(maximumWait)} ms` }, { label: "Compile counters corroborate", value: countersCorroborate ? "Yes" : "Not supplied" }, ...(compileSource ? [{ label: "Peak compilation / batch ratio", value: `${formatNumber(maximumCompilationRatio * 100)}%` }, { label: "Peak compile waiters", value: formatNumber(Math.max(0, ...compileWaiters)) }, { label: "Plan-cache hit movement", value: cacheHit.length ? `${formatNumber(cacheHit[0])}% → ${formatNumber(cacheHit.at(-1)!)}%` : "Not supplied" }] : [])],
         references: this.references, affectedRecordIds: records.map((record) => record.id), affectedPlanIds: context.plans.flatMap((plan) => plan.statements.filter((statement) => statement.retrievedFromCache === false).flatMap((statement) => [plan.id, statement.id])), firstSeen: observation.first, lastSeen: observation.last, persistenceSeconds: observation.persistence, impact: 80_000 + concurrent * 100 + observation.persistence,
       });
     });
@@ -415,10 +522,10 @@ const waitRule: RuleDefinition = {
       const benign = wait.category === "Benign / queue" || wait.category === "Parallelism";
       const directImpactEvidence = records.some((record) => (record.blockingSessionId ?? 0) > 0);
       const captureCount = new Set(records.map((record) => record.collectionTime).filter(Boolean)).size;
-      const sustained = observation.persistence >= RULE_THRESHOLDS.waits.highPersistenceSeconds || (directImpactEvidence && captureCount >= 2);
+      const sustained = observation.persistence >= context.thresholds.waits.highPersistenceSeconds || (directImpactEvidence && captureCount >= context.thresholds.waits.corroboratingCaptures);
       if (maxWait <= 0 && !directImpactEvidence) return null;
-      if (directImpactEvidence && captureCount === 1 && maxWait < RULE_THRESHOLDS.waits.actionableDurationMs) return null;
-      const severity: Severity = benign && !directImpactEvidence ? "Informational" : maxWait >= RULE_THRESHOLDS.waits.actionableDurationMs && sustained ? "High" : maxWait >= RULE_THRESHOLDS.waits.actionableDurationMs ? "Medium" : captureCount === 1 && !directImpactEvidence ? "Informational" : "Low";
+      if (directImpactEvidence && captureCount === 1 && maxWait < context.thresholds.waits.actionableDurationMs) return null;
+      const severity: Severity = benign && !directImpactEvidence ? "Informational" : maxWait >= context.thresholds.waits.actionableDurationMs && sustained ? "High" : maxWait >= context.thresholds.waits.actionableDurationMs ? "Medium" : captureCount === 1 && !directImpactEvidence ? "Informational" : "Low";
       const waitTimeline = buildTimeline("Reported wait duration", "milliseconds", records.map((record) => ({ capturedAt: record.collectionTime, value: record.wait?.durationMs ?? null })));
       const missing = missingColumns(context, ["query_plan"]);
       if (wait.category === "Locking") missing.push(...missingColumns(context, ["locks", "tran_start_time"]));
@@ -431,9 +538,10 @@ const waitRule: RuleDefinition = {
         !directImpactEvidence && !benign ? "No blocking relationship was captured to corroborate direct impact." : null,
         missing.length ? `Additional wait-cause evidence was not supplied: ${[...new Set(missing)].join(", ")}.` : null,
       ].filter((value): value is string => Boolean(value));
-      return finding(this.id, severity, records.length > 1 ? "Medium" : "Low", this.category, `${wait.type} wait on session ${records[0].sessionId ?? "unknown"}`, `${wait.category} wait observed ${records.length} time${records.length === 1 ? "" : "s"}; longest reported wait ${formatNumber(maxWait)} ms.`, {
+      const mediumConfidence = records.length >= context.thresholds.waits.mediumConfidenceObservations;
+      return finding(this.id, severity, mediumConfidence ? "Medium" : "Low", this.category, `${wait.type} wait on session ${records[0].sessionId ?? "unknown"}`, `${wait.category} wait observed ${records.length} time${records.length === 1 ? "" : "s"}; longest reported wait ${formatNumber(maxWait)} ms.`, {
         explanation: benign ? "This wait is commonly expected on its own. It is retained as context and only escalates when persistent or corroborated by another concern." : "Waits identify where a request is stalled, but the cause and resolution depend on the wait family and surrounding evidence.",
-        confidenceReason: records.length > 1 ? `Medium confidence because the same ${wait.type} wait was observed ${records.length} times${directImpactEvidence ? " with a captured blocking relationship" : ""}.` : `Low confidence because ${wait.type} was observed once without enough persistence evidence.`,
+        confidenceReason: mediumConfidence ? `Medium confidence because the same ${wait.type} wait was observed ${records.length} times${directImpactEvidence ? " with a captured blocking relationship" : ""}.` : `Low confidence because ${wait.type} was observed once without enough persistence evidence.`,
         limitations,
         timeline: waitTimeline,
         nextCapture: captureRecommendation(`Re-capture the ${wait.category.toLowerCase()} wait`, missing.length ? `The current capture identifies the wait but is missing ${[...new Set(missing)].join(", ")}.` : records.length === 1 ? "Repeat a short delta sample to determine whether the wait persists or was transient." : "Capture the same interval with task and plan context to confirm the resource causing the stall.", whoIsActiveCommand([...new Set(waitOptions)]), wait.category === "Locking" ? ["Wait duration by task", "Lock resources and owners", "Transaction ownership", "Blocker statement and plan"] : wait.category === "Memory grant" ? ["Wait duration by task", "Requested and granted memory", "Plan memory-grant evidence", "Concurrent grant pressure"] : ["Wait duration by task", "Per-interval request activity", "Execution-plan context"], "Use plan, lock, and memory collection options briefly because they add overhead on busy systems."),
@@ -452,7 +560,7 @@ const waitRule: RuleDefinition = {
 
 const transactionRule: RuleDefinition = {
   id: "WIA-TRANSACTION", title: "Open transactions", category: "Transactions", requiredColumns: ["open_tran_count"], optionalColumns: ["tran_start_time", "status", "implicit_tran", "blocking_session_id"],
-  description: "Finds old or blocking open transactions, including implicit transactions.", thresholds: RULE_THRESHOLDS.transactions, references: [...REFERENCES.blocking, ...REFERENCES.whoIsActive, ...REFERENCES.blitzWho],
+  description: "Finds old or blocking open transactions, including implicit transactions.", references: [...REFERENCES.blocking, ...REFERENCES.whoIsActive, ...REFERENCES.blitzWho],
   evaluate(context) {
     const blockingOwnerSessionIds = new Set(context.records.map((record) => record.blockingSessionId).filter((sessionId): sessionId is number => (sessionId ?? 0) > 0));
     return [...group(context.records.filter((record) => (record.openTranCount ?? 0) > 0), episodeKey).values()].map((records) => {
@@ -461,8 +569,8 @@ const transactionRule: RuleDefinition = {
       const isBlocker = latest.sessionId !== null && blockingOwnerSessionIds.has(latest.sessionId);
       const sleeping = records.some((record) => record.status === "sleeping");
       const transactionAge = Math.max(0, ...records.map((record) => differenceSeconds(record.tranStartTime ?? null, record.collectionTime) ?? 0));
-      if (!isBlocker && age < RULE_THRESHOLDS.transactions.mediumAgeSeconds && transactionAge < RULE_THRESHOLDS.transactions.mediumAgeSeconds && !latest.implicitTran) return null;
-      const severity: Severity = (sleeping && isBlocker) || age >= RULE_THRESHOLDS.transactions.highAgeSeconds ? "High" : age >= RULE_THRESHOLDS.transactions.mediumAgeSeconds || latest.implicitTran ? "Medium" : "Low";
+      if (!isBlocker && age < context.thresholds.transactions.mediumAgeSeconds && transactionAge < context.thresholds.transactions.mediumAgeSeconds && !latest.implicitTran) return null;
+      const severity: Severity = (sleeping && isBlocker) || age >= context.thresholds.transactions.highAgeSeconds ? "High" : age >= context.thresholds.transactions.mediumAgeSeconds || latest.implicitTran ? "Medium" : "Low";
       const observation = times(records);
       const hasTransactionStart = records.some((record) => Boolean(record.tranStartTime));
       const transactionTimeline = buildTimeline(hasTransactionStart ? "Transaction age" : "Request age proxy", "seconds", records.map((record) => ({ capturedAt: record.collectionTime, value: differenceSeconds(record.tranStartTime ?? null, record.collectionTime) ?? record.durationSeconds })));
@@ -491,23 +599,23 @@ const transactionRule: RuleDefinition = {
   },
 };
 
-function planFindings(statement: PlanStatement, plan: PlanDocument): Finding[] {
+function planFindings(statement: PlanStatement, plan: PlanDocument, context: RuleContext): Finding[] {
   const result: Finding[] = [];
   const refs = REFERENCES.plans;
   const affectedRecordIds = plan.sourceRecordId ? [plan.sourceRecordId] : [];
   const planLimitations = [statement.isActual ? "This plan represents one execution and may vary with different parameters or workload conditions." : "This is estimated plan evidence; runtime row counts, spills, elapsed time, and CPU were not observed."];
   for (const operator of statement.operators) {
-    if (operator.actualRows !== null && operator.estimatedRows !== null && operator.actualRows >= RULE_THRESHOLDS.plans.mediumRows) {
+    if (operator.actualRows !== null && operator.estimatedRows !== null && operator.actualRows >= context.thresholds.plans.mediumRows) {
       const minimum = Math.max(1, Math.min(operator.actualRows, operator.estimatedRows));
       const maximum = Math.max(operator.actualRows, operator.estimatedRows);
       const ratio = maximum / minimum;
-      if (ratio >= RULE_THRESHOLDS.plans.mediumEstimateRatio) {
-        const severity: Severity = ratio >= RULE_THRESHOLDS.plans.highEstimateRatio && operator.actualRows >= RULE_THRESHOLDS.plans.highRows ? "High" : "Medium";
+      if (ratio >= context.thresholds.plans.mediumEstimateRatio) {
+        const severity: Severity = ratio >= context.thresholds.plans.highEstimateRatio && operator.actualRows >= context.thresholds.plans.highRows ? "High" : "Medium";
         result.push(finding("PLAN-ESTIMATE", severity, "High", "Execution plan", `Row estimate is off by ${formatNumber(ratio)}×`, `${operator.physicalOp} estimated ${formatNumber(operator.estimatedRows)} rows and processed ${formatNumber(operator.actualRows)}.`, { explanation: "Large cardinality-estimation errors can produce poor join types, memory grants, and access paths.", confidenceReason: "High confidence because the actual execution plan contains both estimated and runtime row counts for this operator.", limitations: planLimitations, diagnosticTools: [diagnosticTool("First Responder Kit · sp_BlitzCache", "Confirm workload importance and review parameter, statistics, and plan warnings.", "EXEC dbo.sp_BlitzCache @SortOrder = 'CPU';", "Use @SortOrder = 'Reads' when logical I/O is the stronger signal."), diagnosticTool("Ola Hallengren · IndexOptimize", "Run targeted statistics-only maintenance only after stale statistics are confirmed.", "EXEC dbo.IndexOptimize @Databases = 'YourDatabase', @Indexes = 'YourDatabase.dbo.YourTable', @FragmentationLow = NULL, @FragmentationMedium = NULL, @FragmentationHigh = NULL, @UpdateStatistics = 'ALL', @OnlyModifiedStatistics = 'Y';", "Replace placeholders and use a controlled maintenance window. Do not rebuild broadly because one estimate is wrong.")], remediation: ["Verify statistics freshness and data skew; check predicates, parameter sensitivity, implicit conversions, and table-variable estimates.", "Compare with a representative actual plan before changing indexes or hints."], evidence: [...planContext(statement), { label: "Operator", value: operator.physicalOp }, { label: "Estimated rows", value: formatNumber(operator.estimatedRows) }, { label: "Actual rows", value: formatNumber(operator.actualRows) }, { label: "Difference", value: `${formatNumber(ratio)}×` }], references: [...refs, ...REFERENCES.blitzCache, ...REFERENCES.olaIndexOptimize], affectedRecordIds, affectedPlanIds: [plan.id, statement.id, operator.id], impact: ratio * Math.log10(operator.actualRows + 1) }));
       }
     }
     if (operator.warnings.some((warning) => warning.toLowerCase().includes("spill"))) {
-      const severity: Severity = (operator.actualRows ?? 0) >= RULE_THRESHOLDS.plans.highRows ? "High" : "Medium";
+      const severity: Severity = (operator.actualRows ?? 0) >= context.thresholds.plans.highRows ? "High" : "Medium";
       result.push(finding("PLAN-SPILL", severity, "High", "Execution plan", `${operator.physicalOp} spilled to tempdb`, "The actual plan reports a runtime spill, indicating that the operator could not complete in its memory grant.", { explanation: "Spills add tempdb I/O and often point to estimation errors, insufficient grants, or a large sort/hash workload.", confidenceReason: "High confidence because the actual execution plan contains an explicit runtime spill warning.", limitations: planLimitations, diagnosticTools: [diagnosticTool("First Responder Kit · sp_BlitzCache", "Find cached plans with the largest spill footprint and determine whether this is recurring.", "EXEC dbo.sp_BlitzCache @SortOrder = 'Spills';"), diagnosticTool("First Responder Kit · sp_BlitzFirst", "Compare tempdb/file pressure and memory grants during the slowdown.", "EXEC dbo.sp_BlitzFirst @ExpertMode = 1;")], remediation: ["Correct large row-estimate errors first, then review indexes and predicates that feed the spilling operator.", "Evaluate grant feedback and memory pressure before changing server memory settings."], evidence: [...planContext(statement), { label: "Operator", value: operator.physicalOp }, { label: "Node", value: String(operator.nodeId ?? "Unknown") }, { label: "Actual rows", value: formatNumber(operator.actualRows) }], references: [...refs, ...REFERENCES.memory, ...REFERENCES.blitzCache, ...REFERENCES.blitzFirst], affectedRecordIds, affectedPlanIds: [plan.id, statement.id, operator.id], impact: (operator.actualRows ?? 0) + 100_000 }));
     }
     const conversion = operator.warnings.find((warning) => warning.toLowerCase().includes("conversion"));
@@ -517,7 +625,16 @@ function planFindings(statement: PlanStatement, plan: PlanDocument): Finding[] {
     const residualPredicate = operator.residualPredicate ?? operator.nonSargablePredicate;
     if (residualPredicate) {
       const explicitResidual = Boolean(operator.residualPredicate);
-      result.push(finding("PLAN-RESIDUAL-PREDICATE", "Medium", "High", "Execution plan", explicitResidual ? "Residual predicate applies after the access path" : "Non-SARGable predicate drove scanning", explicitResidual ? `${operator.physicalOp} contains a separate residual predicate that is evaluated after the access path identifies candidate rows.` : `${operator.physicalOp} applies a captured non-SARGable predicate while scanning rows rather than using it as a selective seek predicate.`, { confidenceReason: explicitResidual ? "High confidence because Showplan supplies a distinct residual predicate alongside the access path." : "High confidence because Showplan supplies the scan access path and a leading-wildcard or conversion expression in the predicate.", limitations: planLimitations, remediation: ["Align predicate and column data types, and remove functions or leading-wildcard patterns from indexed search predicates where requirements allow.", "Measure a representative plan after changing the predicate or index design."], evidence: [...planContext(statement), { label: "Operator", value: operator.physicalOp }, { label: "Node", value: String(operator.nodeId ?? "Unknown") }, { label: "Object", value: operator.objectName ?? "Not supplied" }, { label: "Predicate", value: residualPredicate }], references: refs, affectedRecordIds, affectedPlanIds: [plan.id, statement.id, operator.id], impact: (operator.actualRows ?? operator.estimatedRows ?? 1) + 150 }));
+      const rowVolume = operator.actualRows ?? operator.estimatedRows ?? 0;
+      const lowImpactActual = statement.isActual && rowVolume < context.thresholds.plans.mediumRows;
+      const severity: Severity = !statement.isActual ? "Low" : lowImpactActual ? "Informational" : "Medium";
+      const confidence: Confidence = statement.isActual ? "High" : "Low";
+      const residualLimitations = [
+        ...planLimitations,
+        !statement.isActual ? "The predicate shape is visible, but its runtime row volume and impact were not observed." : null,
+        lowImpactActual ? `This execution processed fewer than ${formatNumber(context.thresholds.plans.mediumRows)} rows at the operator, so the residual is retained as context rather than an actionable concern.` : null,
+      ].filter((value): value is string => Boolean(value));
+      result.push(finding("PLAN-RESIDUAL-PREDICATE", severity, confidence, "Execution plan", explicitResidual ? "Residual predicate applies after the access path" : "Non-SARGable predicate drove scanning", explicitResidual ? `${operator.physicalOp} contains a separate residual predicate that is evaluated after the access path identifies candidate rows.` : `${operator.physicalOp} applies a captured non-SARGable predicate while scanning rows rather than using it as a selective seek predicate.`, { confidenceReason: !statement.isActual ? "Low confidence in operational impact because only estimated plan-shape evidence is available." : explicitResidual ? "High confidence because Showplan supplies a distinct residual predicate alongside the access path." : "High confidence because Showplan supplies the scan access path and a leading-wildcard or conversion expression in the predicate.", limitations: residualLimitations, remediation: ["Align predicate and column data types, and remove functions or leading-wildcard patterns from indexed search predicates where requirements allow.", "Measure a representative plan after changing the predicate or index design."], evidence: [...planContext(statement), { label: "Operator", value: operator.physicalOp }, { label: "Node", value: String(operator.nodeId ?? "Unknown") }, { label: "Object", value: operator.objectName ?? "Not supplied" }, { label: "Predicate", value: residualPredicate }], references: refs, affectedRecordIds, affectedPlanIds: [plan.id, statement.id, operator.id], impact: rowVolume + 150 }));
     }
   }
   const scalarOperators = statement.operators.filter((operator) => operator.hasScalarFunction);
@@ -528,29 +645,40 @@ function planFindings(statement: PlanStatement, plan: PlanDocument): Finding[] {
     result.push(finding("PLAN-SERIALIZATION", "High", "High", "Execution plan", "Plan was forced to execute serially", `The plan ran at DOP 1 and reports NonParallelPlanReason=${statement.nonParallelPlanReason}.`, { confidenceReason: "High confidence because Showplan directly reports both DegreeOfParallelism and NonParallelPlanReason.", limitations: planLimitations, remediation: ["Address the reported plan-specific serialization cause before changing server-wide parallelism settings.", "Compare CPU and elapsed time using a representative execution after the cause is removed."], evidence: [...planContext(statement), { label: "Degree of parallelism", value: String(statement.degreeOfParallelism) }, { label: "Nonparallel reason", value: statement.nonParallelPlanReason }, { label: "Scalar UDF present", value: scalarOperators.length ? "Yes" : "No" }], references: refs, affectedRecordIds, affectedPlanIds: [plan.id, statement.id, ...scalarOperators.map((operator) => operator.id)], impact: 150_000 }));
   }
   if (statement.missingIndexImpact !== null) {
-    const severity: Severity = statement.missingIndexImpact >= RULE_THRESHOLDS.plans.mediumMissingIndexImpact && statement.operators.some((operator) => operator.physicalOp.includes("Scan")) ? "Medium" : "Low";
+    const severity: Severity = statement.missingIndexImpact >= context.thresholds.plans.mediumMissingIndexImpact && statement.operators.some((operator) => operator.physicalOp.includes("Scan")) ? "Medium" : "Low";
     result.push(finding("PLAN-MISSING-INDEX", severity, "Medium", "Execution plan", `Missing-index suggestion (${statement.missingIndexImpact.toFixed(0)}% optimizer impact)`, "The optimizer emitted a missing-index suggestion. It is a hypothesis for this statement, not an instruction to create the index unchanged.", { confidenceReason: "Medium confidence because this is an optimizer suggestion for one statement, not workload-wide index evidence.", limitations: [...planLimitations, "Existing, overlapping, unused, and write-heavy indexes were not evaluated."], diagnosticTools: [diagnosticTool("First Responder Kit · sp_BlitzIndex", "Compare the suggestion with existing, duplicate, and unused indexes on the affected table.", "EXEC dbo.sp_BlitzIndex @DatabaseName = 'YourDatabase', @SchemaName = 'dbo', @TableName = 'YourTable';", "Replace placeholders and review workload-wide read/write costs before creating an index.")], remediation: ["Consolidate overlapping suggestions and include write, storage, and maintenance cost in the decision. Do not create the Showplan suggestion unchanged.", "Test with representative parameters and measure before and after."], evidence: [...planContext(statement), { label: "Reported impact", value: `${statement.missingIndexImpact.toFixed(1)}%` }], references: [...REFERENCES.indexes, ...REFERENCES.blitzIndex], affectedRecordIds, affectedPlanIds: [plan.id, statement.id], impact: statement.missingIndexImpact }));
   }
   if (statement.memoryGrant && statement.memoryGrant.grantedKb > 0) {
     const waste = Math.max(0, statement.memoryGrant.grantedKb - statement.memoryGrant.usedKb);
     const ratio = statement.memoryGrant.usedKb > 0 ? statement.memoryGrant.grantedKb / statement.memoryGrant.usedKb : Number.POSITIVE_INFINITY;
-    if (waste >= RULE_THRESHOLDS.plans.mediumGrantWasteKb && ratio >= RULE_THRESHOLDS.plans.mediumGrantRatio) {
-      const severity: Severity = waste >= RULE_THRESHOLDS.plans.highGrantWasteKb && ratio >= RULE_THRESHOLDS.plans.highGrantRatio ? "High" : "Medium";
+    if (waste >= context.thresholds.plans.mediumGrantWasteKb && ratio >= context.thresholds.plans.mediumGrantRatio) {
+      const severity: Severity = waste >= context.thresholds.plans.highGrantWasteKb && ratio >= context.thresholds.plans.highGrantRatio ? "High" : "Medium";
       result.push(finding("PLAN-MEMORY-GRANT", severity, "High", "Execution plan", "Execution plan received an oversized memory grant", `${formatNumber(waste / 1024)} MB of granted workspace memory was not used.`, { explanation: "Oversized grants can reduce concurrency by reserving workspace memory that other requests may need. Confirm the pattern across executions because parameter sensitivity and memory grant feedback can change later grants.", confidenceReason: "High confidence because the plan reports granted and maximum-used workspace memory for this execution.", limitations: planLimitations, diagnosticTools: [diagnosticTool("First Responder Kit · sp_BlitzCache", "Identify cached queries wasting the most workspace memory and compare this statement with the broader workload.", "EXEC dbo.sp_BlitzCache @SortOrder = 'Unused Grant';"), diagnosticTool("First Responder Kit · sp_BlitzFirst", "Check whether grants are causing server-level pressure or RESOURCE_SEMAPHORE waits during the incident.", "EXEC dbo.sp_BlitzFirst @ExpertMode = 1;")], remediation: ["Investigate row-estimate errors and parameter sensitivity, and verify whether memory grant feedback is active and converging.", "Avoid lowering global memory settings as a first response."], evidence: [...planContext(statement), { label: "Granted", value: `${formatNumber(statement.memoryGrant.grantedKb / 1024)} MB` }, { label: "Used", value: `${formatNumber(statement.memoryGrant.usedKb / 1024)} MB` }, { label: "Unused", value: `${formatNumber(waste / 1024)} MB` }, { label: "Grant / use", value: `${formatNumber(ratio)}×` }], references: [...REFERENCES.memory, ...REFERENCES.blitzCache, ...REFERENCES.blitzFirst], affectedRecordIds, affectedPlanIds: [plan.id, statement.id], impact: waste * ratio }));
     }
   }
   if (!statement.isActual) {
     result.push(finding("PLAN-RUNTIME-UNAVAILABLE", "Not Evaluated", "High", "Data quality", "Runtime plan checks were not evaluated", "This is an estimated plan, so actual rows, runtime warnings, elapsed time, and CPU evidence are unavailable.", { confidenceReason: "High confidence in this limitation because the Showplan document contains no runtime counters.", limitations: planLimitations, nextCapture: captureRecommendation("Capture a representative actual plan", "Runtime-dependent checks require an actual execution plan. Use representative parameters and an approved non-production or controlled production workflow.", undefined, ["Actual versus estimated rows", "Runtime spills and warnings", "Used memory grant", "Elapsed time and CPU evidence"], "Actual-plan collection executes the statement. Follow change-control and workload-safety procedures."), remediation: ["Capture an actual execution plan with representative parameters when safe."], references: refs, affectedRecordIds, affectedPlanIds: [plan.id, statement.id], impact: 0 }));
   }
-  return result;
+  const qualifications = planQualifications(statement, plan);
+  const earlyAbortLimitation = statement.earlyAbortReason ? "Showplan reported an optimizer early-abort reason; its causal significance for this finding was not evaluated." : null;
+  return result.map((item) => {
+    const scopedQualifications = item.ruleId === "PLAN-MEMORY-GRANT"
+      ? qualifications.filter((qualification) => qualification.kind !== "Compile memory")
+      : qualifications;
+    return {
+      ...item,
+      qualifications: scopedQualifications.length ? scopedQualifications : undefined,
+      limitations: earlyAbortLimitation && !item.limitations?.includes(earlyAbortLimitation) ? [...(item.limitations ?? []), earlyAbortLimitation] : item.limitations,
+    };
+  });
 }
 
 const planRule: RuleDefinition = {
-  id: "PLAN-ANALYSIS", title: "Execution plan analysis", category: "Execution plan", requiredColumns: [], optionalColumns: ["query_plan"], description: "Analyzes standalone and embedded SQL Server Showplan XML.", thresholds: RULE_THRESHOLDS.plans, references: REFERENCES.plans,
-  evaluate(context) { return context.plans.flatMap((plan) => plan.statements.flatMap((statement) => planFindings(statement, plan))); },
+  id: "PLAN-ANALYSIS", title: "Execution plan analysis", category: "Execution plan", requiredColumns: [], optionalColumns: ["query_plan"], description: "Analyzes standalone and embedded SQL Server Showplan XML.", references: REFERENCES.plans,
+  evaluate(context) { return context.plans.flatMap((plan) => plan.statements.flatMap((statement) => planFindings(statement, plan, context))); },
 };
 
-export const RULE_DEFINITIONS: RuleDefinition[] = [blockingRule, resourceRule, waitRule, transactionRule, planRule];
+export const RULE_DEFINITIONS: RuleDefinition[] = [schedulerPressureRule, blockingRule, resourceRule, waitRule, transactionRule, planRule];
 
 const FINDING_CAPS: Partial<Record<string, number>> = { "WIA-RESOURCE": 20, "WIA-WAIT": 24, "WIA-TRANSACTION": 20 };
 
@@ -568,7 +696,9 @@ function parseEmbeddedPlans(records: WhoIsActiveRecord[], inputs: AnalysisInput[
     }
     try {
       const source = inputs.find((input) => input.id === record.sourceId)?.fileName ?? "capture";
-      plans.push({ ...parseShowplan(xml, record.sourceId, `${source} row ${record.rowNumber}`), sourceRecordId: record.id });
+      const parsed = parseShowplan(xml, record.sourceId, `${source} row ${record.rowNumber}`);
+      warnings.push(...parsed.warnings.map((warning) => `Row ${record.rowNumber}: ${warning}`));
+      plans.push({ ...parsed, sourceRecordId: record.id });
     } catch (error) {
       warnings.push(`Row ${record.rowNumber}: ${error instanceof Error ? error.message : "embedded plan could not be parsed"}`);
     }
@@ -602,11 +732,25 @@ function enrichRelatedFindings(findings: Finding[], plans: PlanDocument[]): void
   });
 }
 
-export function analyze(inputs: AnalysisInput[], records: WhoIsActiveRecord[], standalonePlans: PlanDocument[]): AnalysisReport {
+function linkSchedulerBackedBlocking(findings: Finding[]): void {
+  const schedulerFindings = findings.filter((item) => item.ruleId === "WIA-SCHEDULER-PRESSURE");
+  for (const scheduler of schedulerFindings) {
+    const sessionId = Number(scheduler.evidence.find((item) => item.label === "Runnable root session")?.value);
+    if (!Number.isFinite(sessionId)) continue;
+    for (const blocking of findings.filter((item) => item.ruleId === "WIA-BLOCKING" && item.blockingContext?.headBlockerSessionId === sessionId)) {
+      scheduler.relatedFindings = [...(scheduler.relatedFindings ?? []), { findingId: blocking.id, reason: "The runnable session retained locks long enough to create this downstream blocking chain." }];
+      blocking.relatedFindings = [...(blocking.relatedFindings ?? []), { findingId: scheduler.id, reason: "Correlated scheduler evidence indicates CPU pressure prolonged the runnable root session." }];
+      blocking.explanation = "This blocking chain is real, but correlated scheduler evidence indicates that CPU pressure prolonged the runnable root session while it retained locks. Treat the chain as a downstream effect and investigate the scheduler-pressure finding first.";
+    }
+  }
+}
+
+export function analyze(inputs: AnalysisInput[], records: WhoIsActiveRecord[], standalonePlans: PlanDocument[], thresholdProfile: ThresholdProfileSnapshot = DEFAULT_THRESHOLD_PROFILE_SNAPSHOT, supplementalEvidence: SupplementalEvidenceSource[] = []): AnalysisReport {
+  const resolvedProfile = validateThresholdProfileSnapshotShape(thresholdProfile);
   const embedded = parseEmbeddedPlans(records, inputs);
   const plans = [...standalonePlans, ...embedded.plans];
   const presentColumns = new Set(inputs.flatMap((input) => input.recognizedColumns));
-  const context: RuleContext = { inputs, records, plans, presentColumns };
+  const context: RuleContext = { inputs, records, plans, supplementalEvidence, presentColumns, thresholds: resolvedProfile.thresholds };
   const findings: Finding[] = [];
   const capCounts = new Map<string, { retainedCount: number; suppressedCount: number }>();
   const appendFindings = (items: Finding[]) => {
@@ -621,6 +765,7 @@ export function analyze(inputs: AnalysisInput[], records: WhoIsActiveRecord[], s
   };
   const notEvaluatedRules: string[] = [];
   for (const rule of RULE_DEFINITIONS) {
+    if (rule === schedulerPressureRule && !supplementalEvidence.some((source) => source.kind === "Scheduler counters")) continue;
     const missing = rule.requiredColumns.filter((column) => !presentColumns.has(column));
     if (missing.length && rule !== planRule) {
       notEvaluatedRules.push(rule.title);
@@ -633,6 +778,18 @@ export function analyze(inputs: AnalysisInput[], records: WhoIsActiveRecord[], s
       continue;
     }
     appendFindings(rule.evaluate(context));
+  }
+  const capturePoints = new Set(records.map((record) => record.collectionTime).filter(Boolean)).size;
+  if (records.length && capturePoints >= context.thresholds.waits.corroboratingCaptures && !findings.some((item) => item.severity !== "Not Evaluated")) {
+    findings.push(finding("CAPTURE-HEALTHY", "Informational", "High", "Assessment", "No systemic concern observed", `${records.length} activity rows across ${capturePoints} capture points produced no actionable blocking, wait, transaction, resource, or plan finding.`, {
+      explanation: "The supplied time series contains no repeated or threshold-crossing evidence of an active performance incident. This conclusion is limited to the captured interval and evidence types supplied.",
+      confidenceReason: "High confidence for the captured interval because multiple collection points were analyzed without a recurring actionable signal.",
+      limitations: plans.length ? ["A quiet capture does not prove the workload is always healthy outside this interval."] : ["A quiet capture does not prove the workload is always healthy outside this interval.", "No execution plan was supplied, so operator-level checks were unavailable."],
+      remediation: ["No escalation is indicated from this capture. Retain it as a baseline and compare future incident captures against it."],
+      evidence: [{ label: "Activity rows", value: String(records.length) }, { label: "Capture points", value: String(capturePoints) }, { label: "Actionable findings", value: "0" }],
+      references: [...REFERENCES.whoIsActive],
+      impact: 0,
+    }));
   }
   const findingCaps: FindingCapDisclosure[] = [...capCounts.entries()].flatMap(([ruleId, counts]) => counts.suppressedCount ? [{ ruleId, ...counts, order: "Descending diagnostic impact" as const }] : []);
   const present = [...presentColumns];
@@ -651,12 +808,13 @@ export function analyze(inputs: AnalysisInput[], records: WhoIsActiveRecord[], s
     findingCaps,
     suppressedSignals: [
       (() => { const count = records.filter((record) => record.wait?.durationMs === 0 && (record.blockingSessionId ?? 0) <= 0 && !["THREADPOOL", "RESOURCE_SEMAPHORE_QUERY_COMPILE"].includes(record.wait.type.toUpperCase())).length; return count ? `${count} zero-duration wait observation${count === 1 ? " was" : "s were"} retained in activity data but suppressed from findings.` : null; })(),
-      (() => { const count = records.filter((record) => (record.openTranCount ?? 0) > 0 && (record.durationSeconds ?? 0) < RULE_THRESHOLDS.transactions.mediumAgeSeconds && (record.sessionId === null || !blockingOwnerSessionIds.has(record.sessionId)) && !record.implicitTran).length; return count ? `${count} short, non-blocking open-transaction observation${count === 1 ? " was" : "s were"} suppressed from findings.` : null; })(),
-      (() => { const count = records.filter((record) => (record.durationSeconds ?? 0) < 30 && [record.cpuMs, record.reads, record.writes, record.usedMemoryPages, record.tempdbCurrentPages].some((value) => (value ?? 0) > 0)).length; return count ? `${count} sub-30-second resource observation${count === 1 ? " was" : "s were"} kept out of capture-relative outlier findings.` : null; })(),
+      (() => { const count = records.filter((record) => (record.openTranCount ?? 0) > 0 && (record.durationSeconds ?? 0) < context.thresholds.transactions.mediumAgeSeconds && (record.sessionId === null || !blockingOwnerSessionIds.has(record.sessionId)) && !record.implicitTran).length; return count ? `${count} short, non-blocking open-transaction observation${count === 1 ? " was" : "s were"} suppressed from findings.` : null; })(),
+      (() => { const count = records.filter((record) => (record.durationSeconds ?? 0) < context.thresholds.resources.minimumDurationSeconds && [record.cpuMs, record.reads, record.writes, record.usedMemoryPages, record.tempdbCurrentPages].some((value) => (value ?? 0) > 0)).length; return count ? `${count} sub-${context.thresholds.resources.minimumDurationSeconds}-second resource observation${count === 1 ? " was" : "s were"} kept out of capture-relative outlier findings.` : null; })(),
     ].filter((value): value is string => Boolean(value)),
   };
   findings.sort((a, b) => severityRank[b.severity] - severityRank[a.severity] || confidenceRank[b.confidence] - confidenceRank[a.confidence] || b.impact - a.impact || a.title.localeCompare(b.title));
   findings.forEach((item) => { item.deepAnalysisProfile = deepAnalysisProfileForFinding(item) ?? undefined; });
   enrichRelatedFindings(findings, plans);
-  return { schemaVersion: "1.0", createdAt: new Date().toISOString(), inputs, records, plans, findings, dataQuality, redacted: false };
+  linkSchedulerBackedBlocking(findings);
+  return { schemaVersion: "1.0", createdAt: new Date().toISOString(), inputs, records, plans, findings, dataQuality, redacted: false, thresholdProfile: resolvedProfile };
 }

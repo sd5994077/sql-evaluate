@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SQL_EVALUATE_CAPTURED_AT=2026-08-28T20:11:47Z -->
+<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan" Version="1.539" Build="16.0.4165.4">
+  <BatchSequence>
+    <Batch>
+      <Statements>
+        <StmtSimple StatementCompId="1" StatementEstRows="640" StatementId="1" StatementOptmLevel="FULL" CardinalityEstimationModelVersion="160" StatementSubTreeCost="0.049671" StatementText="UPDATE dbo.PickList SET Status = @p1, PickedQty = PickedQty + @p2 WHERE WaveId = @p3" StatementType="UPDATE" QueryHash="0x9F2A7C4E1B0D8836" QueryPlanHash="0x4C1B9E7A2F5D3300" QueryStoreQueryId="1174" QueryStorePlanId="418" RetrievedFromCache="true" SecurityPolicyApplied="false">
+          <StatementSetOptions ANSI_NULLS="true" ANSI_PADDING="true" ANSI_WARNINGS="true" ARITHABORT="true" CONCAT_NULL_YIELDS_NULL="true" NUMERIC_ROUNDABORT="false" QUOTED_IDENTIFIER="true" />
+          <QueryPlan DegreeOfParallelism="1" CachedPlanSize="48" CompileTime="4" CompileCPU="4" CompileMemory="320">
+            <MemoryGrantInfo SerialRequiredMemory="1024" SerialDesiredMemory="1088" RequestedMemory="1088" GrantedMemory="1088" MaxUsedMemory="64" />
+            <OptimizerHardwareDependentProperties EstimatedAvailableMemoryGrant="209715" EstimatedPagesCached="26214" EstimatedAvailableDegreeOfParallelism="4" MaxCompileMemory="1592168" />
+            <RelOp AvgRowSize="9" EstimateCPU="0.0000063" EstimateIO="0" EstimateRebinds="0" EstimateRewinds="0" EstimatedExecutionMode="Row" EstimateRows="1" LogicalOp="Update" NodeId="0" Parallel="false" PhysicalOp="Clustered Index Update" EstimatedTotalSubtreeCost="0.049671">
+              <OutputList />
+              <RunTimeInformation>
+                <RunTimeCountersPerThread Thread="0" ActualRows="0" ActualExecutions="1" ActualExecutionMode="Row" ActualElapsedms="38" ActualCPUms="31" />
+              </RunTimeInformation>
+              <Update DMLRequestSort="false">
+                <Object Database="[WarehouseDB]" Schema="[dbo]" Table="[PickList]" Index="[PK_PickList]" IndexKind="Clustered" Storage="RowStore" />
+                <RelOp AvgRowSize="15" EstimateCPU="0.0001987" EstimateIO="0.003125" EstimateRebinds="0" EstimateRewinds="0" EstimatedExecutionMode="Row" EstimateRows="640" EstimatedRowsRead="640" LogicalOp="Index Seek" NodeId="1" Parallel="false" PhysicalOp="Index Seek" EstimatedTotalSubtreeCost="0.0098421" TableCardinality="4180000">
+                  <OutputList>
+                    <ColumnReference Database="[WarehouseDB]" Schema="[dbo]" Table="[PickList]" Column="PickListId" />
+                  </OutputList>
+                  <RunTimeInformation>
+                    <RunTimeCountersPerThread Thread="0" ActualRows="640" ActualRowsRead="640" ActualExecutions="1" ActualExecutionMode="Row" ActualElapsedms="9" ActualCPUms="7" ActualScans="1" ActualLogicalReads="1934" ActualPhysicalReads="0" />
+                  </RunTimeInformation>
+                  <IndexScan Ordered="true" ScanDirection="FORWARD" ForcedIndex="false" ForceSeek="false" ForceScan="false" NoExpandHint="false" Storage="RowStore">
+                    <DefinedValues>
+                      <DefinedValue>
+                        <ColumnReference Database="[WarehouseDB]" Schema="[dbo]" Table="[PickList]" Column="PickListId" />
+                      </DefinedValue>
+                    </DefinedValues>
+                    <Object Database="[WarehouseDB]" Schema="[dbo]" Table="[PickList]" Index="[IX_PickList_WaveId]" IndexKind="NonClustered" Storage="RowStore" />
+                    <SeekPredicates>
+                      <SeekPredicateNew>
+                        <SeekKeys>
+                          <Prefix ScanType="EQ">
+                            <RangeColumns>
+                              <ColumnReference Database="[WarehouseDB]" Schema="[dbo]" Table="[PickList]" Column="WaveId" />
+                            </RangeColumns>
+                            <RangeExpressions>
+                              <ScalarOperator ScalarString="[@p3]">
+                                <Identifier>
+                                  <ColumnReference Column="@p3" />
+                                </Identifier>
+                              </ScalarOperator>
+                            </RangeExpressions>
+                          </Prefix>
+                        </SeekKeys>
+                      </SeekPredicateNew>
+                    </SeekPredicates>
+                  </IndexScan>
+                </RelOp>
+              </Update>
+            </RelOp>
+          </QueryPlan>
+        </StmtSimple>
+      </Statements>
+    </Batch>
+  </BatchSequence>
+</ShowPlanXML>

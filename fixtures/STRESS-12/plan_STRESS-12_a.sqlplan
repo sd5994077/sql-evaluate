@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan" Version="1.539" Build="16.0.4165.4">
+  <BatchSequence>
+    <Batch>
+      <Statements>
+        <StmtSimple StatementText="SELECT a.ActorId, a.Action, a.WhenUtc FROM dbo.AuditTrail a WHERE a.Area = @p1 ORDER BY a.WhenUtc DESC" StatementId="1" StatementCompId="1" StatementType="SELECT" RetrievedFromCache="true" StatementSubTreeCost="255.7" StatementEstRows="750" StatementOptmLevel="FULL" QueryHash="0xD1FF0000AABBCCDD" QueryPlanHash="0x9090909090909090">
+          <QueryPlan DegreeOfParallelism="1" MemoryGrant="720896" CachedPlanSize="72" CompileTime="10" CompileCPU="10" CompileMemory="3072">
+            <MemoryGrantInfo SerialRequiredMemory="4096" SerialDesiredMemory="720896" RequestedMemory="720896" GrantedMemory="720896" MaxUsedMemory="37000" MaxQueryMemory="1048576" />
+            <RelOp NodeId="0" PhysicalOp="Sort" LogicalOp="Sort" EstimateRows="750" EstimateIO="0" EstimateCPU="3.4" AvgRowSize="52" EstimatedTotalSubtreeCost="255.7" Parallel="false" EstimateRebinds="0" EstimateRewinds="0">
+              <OutputList>
+                <ColumnReference Database="[AuditDb]" Schema="[dbo]" Table="[AuditTrail]" Alias="[a]" Column="ActorId" />
+                <ColumnReference Database="[AuditDb]" Schema="[dbo]" Table="[AuditTrail]" Alias="[a]" Column="Action" />
+                <ColumnReference Database="[AuditDb]" Schema="[dbo]" Table="[AuditTrail]" Alias="[a]" Column="WhenUtc" />
+              </OutputList>
+              <RunTimeInformation>
+                <RunTimeCountersPerThread Thread="0" ActualRows="742" ActualRowsRead="742" ActualExecutions="1" ActualElapsedms="230" ActualCPUms="210" />
+              </RunTimeInformation>
+              <Sort Distinct="false">
+                <OrderBy>
+                  <OrderByColumn Ascending="false">
+                    <ColumnReference Database="[AuditDb]" Schema="[dbo]" Table="[AuditTrail]" Alias="[a]" Column="WhenUtc" />
+                  </OrderByColumn>
+                </OrderBy>
+                <RelOp NodeId="1" PhysicalOp="Index Seek" LogicalOp="Index Seek" EstimateRows="750" EstimatedRowsRead="750" EstimateIO="0.31" EstimateCPU="0.01" AvgRowSize="52" EstimatedTotalSubtreeCost="0.33" TableCardinality="920000" Parallel="false" EstimateRebinds="0" EstimateRewinds="0">
+                  <OutputList>
+                    <ColumnReference Database="[AuditDb]" Schema="[dbo]" Table="[AuditTrail]" Alias="[a]" Column="ActorId" />
+                    <ColumnReference Database="[AuditDb]" Schema="[dbo]" Table="[AuditTrail]" Alias="[a]" Column="Action" />
+                    <ColumnReference Database="[AuditDb]" Schema="[dbo]" Table="[AuditTrail]" Alias="[a]" Column="WhenUtc" />
+                  </OutputList>
+                  <RunTimeInformation>
+                    <RunTimeCountersPerThread Thread="0" ActualRows="742" ActualRowsRead="742" ActualExecutions="1" ActualElapsedms="70" ActualCPUms="55" ActualLogicalReads="330" />
+                  </RunTimeInformation>
+                  <IndexScan Ordered="true" ScanDirection="FORWARD" ForcedIndex="false" ForceSeek="false" ForceScan="false" NoExpandHint="false" Storage="RowStore">
+                    <DefinedValues>
+                      <DefinedValue>
+                        <ColumnReference Database="[AuditDb]" Schema="[dbo]" Table="[AuditTrail]" Alias="[a]" Column="ActorId" />
+                      </DefinedValue>
+                    </DefinedValues>
+                    <Object Database="[AuditDb]" Schema="[dbo]" Table="[AuditTrail]" Index="[IX_AuditTrail_Area]" Alias="[a]" IndexKind="NonClustered" Storage="RowStore" />
+                    <SeekPredicates>
+                      <SeekPredicateNew>
+                        <SeekKeys>
+                          <Prefix ScanType="EQ">
+                            <RangeColumns>
+                              <ColumnReference Database="[AuditDb]" Schema="[dbo]" Table="[AuditTrail]" Alias="[a]" Column="Area" />
+                            </RangeColumns>
+                            <RangeExpressions>
+                              <ScalarOperator ScalarString="[@p1]">
+                                <Identifier><ColumnReference Column="@p1" /></Identifier>
+                              </ScalarOperator>
+                            </RangeExpressions>
+                          </Prefix>
+                        </SeekKeys>
+                      </SeekPredicateNew>
+                    </SeekPredicates>
+                  </IndexScan>
+                </RelOp>
+              </Sort>
+            </RelOp>
+          </QueryPlan>
+        </StmtSimple>
+      </Statements>
+    </Batch>
+  </BatchSequence>
+</ShowPlanXML>

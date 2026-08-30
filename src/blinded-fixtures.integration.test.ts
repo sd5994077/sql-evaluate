@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { AnalysisReport } from "./types";
 import { processInputFiles } from "./lib/processFiles";
+import { DEFAULT_THRESHOLD_PROFILE_SNAPSHOT } from "./rules/thresholdProfiles";
 import { addEvidenceFiles, createDeepAnalysisCase } from "./deepAnalysis/case";
 import { deepAnalysisProfileForFinding } from "./deepAnalysis/profile";
 
@@ -11,7 +12,7 @@ const fixturesRoot = fileURLToPath(new URL("../fixtures/", import.meta.url));
 
 async function analyzeCase(caseId: string, names: string[]): Promise<AnalysisReport> {
   const files = names.map((name) => new File([readFileSync(`${fixturesRoot}${caseId}/${name}`)], name));
-  const result = await processInputFiles(files);
+  const result = await processInputFiles(files, { thresholdProfile: DEFAULT_THRESHOLD_PROFILE_SNAPSHOT });
   if (result.type === "error") throw new Error(result.errors.join("\n"));
   expect(result.errors).toEqual([]);
   return result.report;
@@ -25,31 +26,55 @@ describe("opaque blinded fixture regressions", () => {
   it("CASE-001 stays quiet for a healthy capture", async () => {
     const report = await analyzeCase("CASE-001", ["whoisactive_CASE-001.csv"]);
     expect(report.findings.filter((item) => ["High", "Medium", "Low"].includes(item.severity))).toHaveLength(0);
+    expect(report.findings.find((item) => item.ruleId === "CAPTURE-HEALTHY")).toMatchObject({ severity: "Informational", confidence: "High" });
+  });
+
+  it("CASE-003 recognizes scheduler counters and prioritizes CPU pressure over secondary blocking", async () => {
+    const report = await analyzeCase("CASE-003", ["whoisactive_CASE-003.csv", "counters_CASE-003.csv"]);
+    const scheduler = report.findings.find((item) => item.ruleId === "WIA-SCHEDULER-PRESSURE");
+    const blocking = report.findings.find((item) => item.ruleId === "WIA-BLOCKING" && item.blockingContext?.headBlockerSessionId === 44);
+    expect(scheduler).toMatchObject({ severity: "High", confidence: "High" });
+    expect(scheduler?.title).toMatch(/cpu|scheduler/i);
+    expect(scheduler?.evidence).toEqual(expect.arrayContaining([
+      { label: "Runnable root session", value: "44" },
+    ]));
+    expect(blocking?.relatedFindings?.some((item) => item.findingId === scheduler?.id)).toBe(true);
+    expect(report.findings.indexOf(scheduler!)).toBeLessThan(report.findings.indexOf(blocking!));
   });
 
   it("CASE-004 identifies one compilation-pressure incident", async () => {
-    const report = await analyzeCase("CASE-004", ["whoisactive_CASE-004.xlsx", "plan_CASE-004_a.sqlplan"]);
+    const report = await analyzeCase("CASE-004", ["whoisactive_CASE-004.xlsx", "plan_CASE-004_a.sqlplan", "counters_CASE-004.csv"]);
     const primary = report.findings.filter((item) => item.ruleId === "WIA-COMPILE-PRESSURE");
     expect(primary).toHaveLength(1);
     expect(primary[0].severity).toMatch(/High|Medium/);
     expect(primary[0].title).toMatch(/compil|plan.cache/i);
     expect(primary[0].affectedRecordIds.length).toBe(417);
+    expect(primary[0].evidence).toEqual(expect.arrayContaining([
+      { label: "Compile counters corroborate", value: "Yes" },
+    ]));
+    expect(report.findings.find((item) => item.ruleId === "PLAN-RESIDUAL-PREDICATE")?.severity).toBe("Informational");
   });
 
   it("CASE-005 identifies one worker-exhaustion incident", async () => {
-    const report = await analyzeCase("CASE-005", ["whoisactive_CASE-005.csv"]);
+    const report = await analyzeCase("CASE-005", ["whoisactive_CASE-005.csv", "counters_CASE-005.csv"]);
     const primary = report.findings.filter((item) => item.ruleId === "WIA-WORKER-EXHAUSTION");
     expect(primary).toHaveLength(1);
-    expect(primary[0].severity).toBe("High");
+    expect(primary[0].severity).toBe("Critical");
     expect(primary[0].title).toMatch(/worker|THREADPOOL/i);
     expect(primary[0].affectedRecordIds.length).toBe(664);
+    expect(primary[0].evidence).toEqual(expect.arrayContaining([
+      { label: "Worker ceiling observed", value: "Yes" },
+    ]));
     expect(report.findings.filter((item) => item.ruleId === "WIA-WAIT" && item.title.includes("THREADPOOL"))).toHaveLength(0);
   });
 
   it("CASE-006 surfaces the actual spill without downgrading the published grant threshold", async () => {
-    const report = await analyzeCase("CASE-006", ["whoisactive_CASE-006.xlsx", "plan_CASE-006_a.sqlplan"]);
+    const report = await analyzeCase("CASE-006", ["whoisactive_CASE-006.xlsx", "plan_CASE-006_a.sqlplan", "counters_CASE-006.csv"]);
     expect(report.findings.some((item) => item.ruleId === "PLAN-SPILL")).toBe(true);
-    expect(report.findings.find((item) => item.ruleId === "PLAN-MEMORY-GRANT")?.severity).toBe("High");
+    const grant = report.findings.find((item) => item.ruleId === "PLAN-MEMORY-GRANT");
+    expect(grant?.severity).toBe("High");
+    expect(grant?.qualifications?.some((item) => item.kind === "Compile memory")).toBe(false);
+    expect(grant?.confidence).toBe("High");
   });
 
   it("CASE-007 surfaces forced serialization and scalar UDF evidence", async () => {
@@ -70,6 +95,8 @@ describe("opaque blinded fixture regressions", () => {
     const report = await analyzeCase("CASE-009", ["whoisactive_CASE-009.csv"]);
     const actionable = report.findings.filter((item) => ["High", "Medium", "Low", "Informational"].includes(item.severity));
     expect(actionable.length).toBeLessThanOrEqual(1);
+    expect(actionable[0]?.title).toMatch(/LCK_M_SCH_S/i);
+    expect(actionable[0]?.summary).toMatch(/180 ms/i);
     expect(actionable.every((item) => deepAnalysisProfileForFinding(item) === null && item.deepAnalysisProfile === undefined)).toBe(true);
   });
 
@@ -78,6 +105,7 @@ describe("opaque blinded fixture regressions", () => {
     const limitation = report.findings.find((item) => item.ruleId === "PLAN-RUNTIME-UNAVAILABLE");
     expect(limitation?.severity).toBe("Not Evaluated");
     expect(limitation?.nextCapture?.title).toMatch(/actual plan/i);
+    expect(report.findings.some((item) => item.ruleId === "PLAN-RESIDUAL-PREDICATE")).toBe(false);
   });
 
   it("routes blocking profiles from the root state", async () => {

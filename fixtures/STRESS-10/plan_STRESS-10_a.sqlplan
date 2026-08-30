@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan" Version="1.539" Build="16.0.4165.4">
+  <BatchSequence>
+    <Batch>
+      <Statements>
+        <StmtSimple StatementText="SELECT c.CustomerId, c.Name FROM dbo.Customer c WHERE c.Segment = @p1 ORDER BY c.Name" StatementId="1" StatementCompId="1" StatementType="SELECT" RetrievedFromCache="true" StatementSubTreeCost="120.5" StatementEstRows="9000" StatementOptmLevel="FULL" QueryHash="0xAA01AA01AA01AA01" QueryPlanHash="0xBB01BB01BB01BB01">
+          <QueryPlan DegreeOfParallelism="1" MemoryGrant="640000" CachedPlanSize="64" CompileTime="8" CompileCPU="8" CompileMemory="2048">
+            <MemoryGrantInfo SerialRequiredMemory="4096" SerialDesiredMemory="640000" RequestedMemory="640000" GrantedMemory="640000" MaxUsedMemory="80000" MaxQueryMemory="1048576" />
+            <RelOp NodeId="0" PhysicalOp="Sort" LogicalOp="Sort" EstimateRows="9000" EstimateIO="0" EstimateCPU="2.1" AvgRowSize="60" EstimatedTotalSubtreeCost="120.5" Parallel="false" EstimateRebinds="0" EstimateRewinds="0">
+              <OutputList>
+                <ColumnReference Database="[CrmDB]" Schema="[dbo]" Table="[Customer]" Alias="[c]" Column="CustomerId" />
+                <ColumnReference Database="[CrmDB]" Schema="[dbo]" Table="[Customer]" Alias="[c]" Column="Name" />
+              </OutputList>
+              <RunTimeInformation>
+                <RunTimeCountersPerThread Thread="0" ActualRows="8800" ActualRowsRead="8800" ActualExecutions="1" ActualElapsedms="180" ActualCPUms="150" />
+              </RunTimeInformation>
+              <Sort Distinct="false">
+                <OrderBy>
+                  <OrderByColumn Ascending="true">
+                    <ColumnReference Database="[CrmDB]" Schema="[dbo]" Table="[Customer]" Alias="[c]" Column="Name" />
+                  </OrderByColumn>
+                </OrderBy>
+                <RelOp NodeId="1" PhysicalOp="Index Seek" LogicalOp="Index Seek" EstimateRows="9000" EstimatedRowsRead="9000" EstimateIO="0.32" EstimateCPU="0.02" AvgRowSize="60" EstimatedTotalSubtreeCost="0.35" TableCardinality="480000" Parallel="false" EstimateRebinds="0" EstimateRewinds="0">
+                  <OutputList>
+                    <ColumnReference Database="[CrmDB]" Schema="[dbo]" Table="[Customer]" Alias="[c]" Column="CustomerId" />
+                    <ColumnReference Database="[CrmDB]" Schema="[dbo]" Table="[Customer]" Alias="[c]" Column="Name" />
+                  </OutputList>
+                  <RunTimeInformation>
+                    <RunTimeCountersPerThread Thread="0" ActualRows="8800" ActualRowsRead="8800" ActualExecutions="1" ActualElapsedms="60" ActualCPUms="40" ActualLogicalReads="290" />
+                  </RunTimeInformation>
+                  <IndexScan Ordered="true" ScanDirection="FORWARD" ForcedIndex="false" ForceSeek="false" ForceScan="false" NoExpandHint="false" Storage="RowStore">
+                    <DefinedValues>
+                      <DefinedValue>
+                        <ColumnReference Database="[CrmDB]" Schema="[dbo]" Table="[Customer]" Alias="[c]" Column="CustomerId" />
+                      </DefinedValue>
+                    </DefinedValues>
+                    <Object Database="[CrmDB]" Schema="[dbo]" Table="[Customer]" Index="[IX_Customer_Segment]" Alias="[c]" IndexKind="NonClustered" Storage="RowStore" />
+                    <SeekPredicates>
+                      <SeekPredicateNew>
+                        <SeekKeys>
+                          <Prefix ScanType="EQ">
+                            <RangeColumns>
+                              <ColumnReference Database="[CrmDB]" Schema="[dbo]" Table="[Customer]" Alias="[c]" Column="Segment" />
+                            </RangeColumns>
+                            <RangeExpressions>
+                              <ScalarOperator ScalarString="[@p1]">
+                                <Identifier><ColumnReference Column="@p1" /></Identifier>
+                              </ScalarOperator>
+                            </RangeExpressions>
+                          </Prefix>
+                        </SeekKeys>
+                      </SeekPredicateNew>
+                    </SeekPredicates>
+                  </IndexScan>
+                </RelOp>
+              </Sort>
+            </RelOp>
+          </QueryPlan>
+        </StmtSimple>
+        <StmtSimple StatementText="SELECT p.ProductId, p.Title FROM dbo.Product p WHERE p.CategoryId = @p1 ORDER BY p.Title" StatementId="2" StatementCompId="2" StatementType="SELECT" RetrievedFromCache="true" StatementSubTreeCost="118.0" StatementEstRows="9000" StatementOptmLevel="FULL" QueryHash="0xAA02AA02AA02AA02" QueryPlanHash="0xBB02BB02BB02BB02">
+          <QueryPlan DegreeOfParallelism="1" MemoryGrant="635000" CachedPlanSize="64" CompileTime="8" CompileCPU="8" CompileMemory="2048">
+            <MemoryGrantInfo SerialRequiredMemory="4096" SerialDesiredMemory="635000" RequestedMemory="635000" GrantedMemory="635000" MaxUsedMemory="80000" MaxQueryMemory="1048576" />
+            <RelOp NodeId="0" PhysicalOp="Sort" LogicalOp="Sort" EstimateRows="9000" EstimateIO="0" EstimateCPU="2.1" AvgRowSize="60" EstimatedTotalSubtreeCost="118.0" Parallel="false" EstimateRebinds="0" EstimateRewinds="0">
+              <OutputList>
+                <ColumnReference Database="[CrmDB]" Schema="[dbo]" Table="[Product]" Alias="[p]" Column="ProductId" />
+                <ColumnReference Database="[CrmDB]" Schema="[dbo]" Table="[Product]" Alias="[p]" Column="Title" />
+              </OutputList>
+              <RunTimeInformation>
+                <RunTimeCountersPerThread Thread="0" ActualRows="8800" ActualRowsRead="8800" ActualExecutions="1" ActualElapsedms="175" ActualCPUms="150" />
+              </RunTimeInformation>
+              <Sort Distinct="false">
+                <OrderBy>
+                  <OrderByColumn Ascending="true">
+                    <ColumnReference Database="[CrmDB]" Schema="[dbo]" Table="[Product]" Alias="[p]" Column="Title" />
+                  </OrderByColumn>
+                </OrderBy>
+                <RelOp NodeId="1" PhysicalOp="Index Seek" LogicalOp="Index Seek" EstimateRows="9000" EstimatedRowsRead="9000" EstimateIO="0.32" EstimateCPU="0.02" AvgRowSize="60" EstimatedTotalSubtreeCost="0.35" TableCardinality="512000" Parallel="false" EstimateRebinds="0" EstimateRewinds="0">
+                  <OutputList>
+                    <ColumnReference Database="[CrmDB]" Schema="[dbo]" Table="[Product]" Alias="[p]" Column="ProductId" />
+                    <ColumnReference Database="[CrmDB]" Schema="[dbo]" Table="[Product]" Alias="[p]" Column="Title" />
+                  </OutputList>
+                  <RunTimeInformation>
+                    <RunTimeCountersPerThread Thread="0" ActualRows="8800" ActualRowsRead="8800" ActualExecutions="1" ActualElapsedms="58" ActualCPUms="40" ActualLogicalReads="300" />
+                  </RunTimeInformation>
+                  <IndexScan Ordered="true" ScanDirection="FORWARD" ForcedIndex="false" ForceSeek="false" ForceScan="false" NoExpandHint="false" Storage="RowStore">
+                    <DefinedValues>
+                      <DefinedValue>
+                        <ColumnReference Database="[CrmDB]" Schema="[dbo]" Table="[Product]" Alias="[p]" Column="ProductId" />
+                      </DefinedValue>
+                    </DefinedValues>
+                    <Object Database="[CrmDB]" Schema="[dbo]" Table="[Product]" Index="[IX_Product_CategoryId]" Alias="[p]" IndexKind="NonClustered" Storage="RowStore" />
+                    <SeekPredicates>
+                      <SeekPredicateNew>
+                        <SeekKeys>
+                          <Prefix ScanType="EQ">
+                            <RangeColumns>
+                              <ColumnReference Database="[CrmDB]" Schema="[dbo]" Table="[Product]" Alias="[p]" Column="CategoryId" />
+                            </RangeColumns>
+                            <RangeExpressions>
+                              <ScalarOperator ScalarString="[@p1]">
+                                <Identifier><ColumnReference Column="@p1" /></Identifier>
+                              </ScalarOperator>
+                            </RangeExpressions>
+                          </Prefix>
+                        </SeekKeys>
+                      </SeekPredicateNew>
+                    </SeekPredicates>
+                  </IndexScan>
+                </RelOp>
+              </Sort>
+            </RelOp>
+          </QueryPlan>
+        </StmtSimple>
+      </Statements>
+    </Batch>
+  </BatchSequence>
+</ShowPlanXML>

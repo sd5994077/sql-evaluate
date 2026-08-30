@@ -35,6 +35,18 @@ function numberAttr(element: XmlElement | undefined, name: string): number | nul
   return asNumber(attr(element, name));
 }
 
+function compileNumberAttr(element: XmlElement | undefined, name: string, warnings: string[]): number | null {
+  const value = attr(element, name);
+  if (value === null) return null;
+  const trimmed = value.trim();
+  const parsed = trimmed && /^[+]?(?:\d+(?:\.\d+)?|\.\d+)(?:e[+-]?\d+)?$/i.test(trimmed) ? Number(trimmed) : Number.NaN;
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    warnings.push(`${name} was ignored because it was not a finite non-negative number.`);
+    return null;
+  }
+  return parsed;
+}
+
 function runtimeRows(relop: XmlElement): number | null {
   const counters = operatorElements(relop, "RunTimeCountersPerThread");
   if (!counters.length) return null;
@@ -70,7 +82,9 @@ function parseOperators(statement: XmlElement): PlanOperator[] {
     const object = operatorElements(relop, "Object")[0];
     const ordinaryPredicate = operatorElements(relop, "Predicate")[0];
     const seekPredicates = operatorElements(relop, "SeekPredicates")[0];
-    const explicitResidual = operatorElements(relop, "ProbeResidual")[0] ?? operatorElements(relop, "Residual")[0];
+    // ProbeResidual is the normal equality verification used by a hash join after
+    // probing a hash bucket. It is not an access-path residual predicate.
+    const explicitResidual = operatorElements(relop, "Residual")[0];
     const seekPredicate = predicateExpression(seekPredicates);
     const residualPredicate = predicateExpression(explicitResidual ?? (seekPredicates && ordinaryPredicate ? ordinaryPredicate : undefined));
     const predicate = predicateExpression(ordinaryPredicate) ?? residualPredicate ?? seekPredicate;
@@ -115,7 +129,7 @@ function attachStatementWarnings(operators: PlanOperator[], warnings: string[]):
   }
 }
 
-function parseStatement(statement: XmlElement): PlanStatement {
+function parseStatement(statement: XmlElement, documentWarnings: string[]): PlanStatement {
   const queryPlan = elements(statement, "QueryPlan")[0];
   const operators = parseOperators(statement);
   const statementWarnings = queryPlan ? operatorWarnings(queryPlan) : [];
@@ -155,9 +169,9 @@ function parseStatement(statement: XmlElement): PlanStatement {
     earlyAbortReason: attr(statement, "StatementOptmEarlyAbortReason"),
     optimizationLevel: attr(statement, "StatementOptmLevel"),
     degreeOfParallelism: numberAttr(queryPlan, "DegreeOfParallelism"),
-    compileTimeMs: numberAttr(queryPlan, "CompileTime"),
-    compileCpuMs: numberAttr(queryPlan, "CompileCPU"),
-    compileMemoryKb: numberAttr(queryPlan, "CompileMemory"),
+    compileTimeMs: compileNumberAttr(queryPlan, "CompileTime", documentWarnings),
+    compileCpuMs: compileNumberAttr(queryPlan, "CompileCPU", documentWarnings),
+    compileMemoryKb: compileNumberAttr(queryPlan, "CompileMemory", documentWarnings),
     retrievedFromCache: attr(statement, "RetrievedFromCache") === null ? null : attr(statement, "RetrievedFromCache")?.toLowerCase() === "true",
   };
 }
@@ -177,9 +191,10 @@ export function parseShowplan(xml: string, sourceId: string, fileName: string): 
   const document = new DOMParser({ onError: (level, message) => { if (level === "error" || level === "fatalError") parserErrors.push(message); } }).parseFromString(xml, "application/xml");
   const roots = elements(document, "ShowPlanXML");
   if (!roots.length || parserErrors.length) throw new Error(`This file is not valid SQL Server Showplan XML${parserErrors[0] ? `: ${parserErrors[0]}` : "."}`);
+  const planWarnings: string[] = [];
   const statements = ["StmtSimple", "StmtCond", "StmtCursor", "StmtUseDb", "StmtReceive"]
     .flatMap((name) => elements(document, name))
-    .map(parseStatement);
+    .map((statement) => parseStatement(statement, planWarnings));
   if (!statements.length) throw new Error("No SQL statements were found in the Showplan document.");
   const root = roots[0];
   return {
@@ -189,7 +204,7 @@ export function parseShowplan(xml: string, sourceId: string, fileName: string): 
     version: attr(root, "Version"),
     isActual: statements.some((statement) => statement.isActual),
     statements,
-    warnings: [],
+    warnings: [...new Set(planWarnings)],
     sourceKind: inferSourceKind(fileName, statements.some((statement) => statement.isActual), sourceId),
     capturedAt: null,
   };

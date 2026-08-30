@@ -1,14 +1,16 @@
 import * as XLSX from "xlsx";
-import type { AnalysisInput, PlanDocument, WhoIsActiveRecord } from "../types";
+import type { AnalysisInput, PlanDocument, SupplementalEvidenceSource, WhoIsActiveRecord } from "../types";
 import { canonicalColumn, headerScore, normalizeHeader } from "../schema";
 import { decodeText, findHeaderRow, parseCsv } from "./csv";
 import { normalizeRows, sourceIdFor } from "./normalize";
 import { parseShowplan } from "./showplan";
+import { parseSupplementalEvidence } from "./supplementalEvidence";
 
 export interface ParsedSource {
   input: AnalysisInput;
   records: WhoIsActiveRecord[];
   plans: PlanDocument[];
+  supplementalEvidence: SupplementalEvidenceSource[];
 }
 
 function schemaFor(headers: unknown[]): { recognized: string[]; unknown: string[]; duplicates: string[] } {
@@ -49,6 +51,7 @@ function fromMatrix(file: File, format: "csv" | "xlsx", matrix: unknown[][], she
     },
     records,
     plans: [],
+    supplementalEvidence: [],
   };
 }
 
@@ -56,7 +59,12 @@ export async function parseCaptureFile(file: File): Promise<ParsedSource> {
   if (file.size > 100 * 1024 * 1024) throw new Error("Capture files are limited to 100 MB.");
   const lower = file.name.toLowerCase();
   const buffer = await file.arrayBuffer();
-  if (lower.endsWith(".csv") || lower.endsWith(".tsv")) return fromMatrix(file, "csv", parseCsv(decodeText(buffer)));
+  if (lower.endsWith(".csv") || lower.endsWith(".tsv")) {
+    const matrix = parseCsv(decodeText(buffer));
+    const supplemental = parseSupplementalEvidence(file, matrix);
+    if (supplemental) return { input: supplemental.input, records: [], plans: [], supplementalEvidence: [supplemental.evidence] };
+    return fromMatrix(file, "csv", matrix);
+  }
   if (lower.endsWith(".xlsx") || lower.endsWith(".xls")) {
     const workbook = XLSX.read(buffer, { type: "array", cellDates: true, dense: true });
     const candidates = workbook.SheetNames.map((name) => {
@@ -81,6 +89,7 @@ export async function parsePlanFile(file: File): Promise<ParsedSource> {
     input: { id: sourceId, fileName: file.name, size: file.size, format: "sqlplan", rowCount: 0, recognizedColumns: [], unknownColumns: [], warnings: plan.warnings },
     records: [],
     plans: [plan],
+    supplementalEvidence: [],
   };
 }
 

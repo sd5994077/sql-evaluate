@@ -1,4 +1,4 @@
-export type Severity = "High" | "Medium" | "Low" | "Informational" | "Not Evaluated";
+export type Severity = "Critical" | "High" | "Medium" | "Low" | "Informational" | "Not Evaluated";
 export type Confidence = "High" | "Medium" | "Low";
 export type InputFormat = "csv" | "xlsx" | "sqlplan" | "report";
 
@@ -56,6 +56,22 @@ export interface WhoIsActiveRecord {
   hostName: string | null;
   programName: string | null;
   original: Record<string, unknown>;
+}
+
+export type SupplementalEvidenceKind = "Scheduler counters" | "Compilation counters" | "Worker counters" | "Memory counters" | "Query Store";
+
+export interface SupplementalEvidenceSample {
+  collectionTime: string | null;
+  metrics: Record<string, number>;
+}
+
+export interface SupplementalEvidenceSource {
+  id: string;
+  sourceId: string;
+  fileName: string;
+  kind: SupplementalEvidenceKind;
+  samples: SupplementalEvidenceSample[];
+  rowCount: number;
 }
 
 export interface PlanOperator {
@@ -190,6 +206,17 @@ export interface RelatedFindingLink {
   reason: string;
 }
 
+export type FindingQualificationKind = "Compile time" | "Compile CPU" | "Compile memory" | "Optimizer early abort" | "Optimization level";
+
+export interface FindingQualification {
+  kind: FindingQualificationKind;
+  disposition: "Observed" | "Context only";
+  value: string;
+  reason: string;
+  planId: string;
+  statementId: string;
+}
+
 export interface Finding {
   id: string;
   ruleId: string;
@@ -207,6 +234,7 @@ export interface Finding {
   timeline?: FindingTimeline;
   nextCapture?: CaptureRecommendation;
   relatedFindings?: RelatedFindingLink[];
+  qualifications?: FindingQualification[];
   evidence: EvidenceItem[];
   references: { label: string; url: string }[];
   affectedRecordIds: string[];
@@ -235,6 +263,76 @@ export interface DataQuality {
   findingCaps?: FindingCapDisclosure[];
 }
 
+export interface ThresholdProfileThresholds {
+  blocking: {
+    mediumVictims: number;
+    highVictims: number;
+    mediumPersistenceSeconds: number;
+    highPersistenceSeconds: number;
+    transientVictimWaitMs: number;
+  };
+  resources: {
+    minimumDurationSeconds: number;
+    lowDurationSeconds: number;
+    mediumDurationSeconds: number;
+    highDurationSeconds: number;
+    mediumPercentile: number;
+    highPercentile: number;
+    lowRepeatedCaptures: number;
+    mediumConfidenceCaptures: number;
+  };
+  waits: {
+    actionableDurationMs: number;
+    highPersistenceSeconds: number;
+    corroboratingCaptures: number;
+    mediumConfidenceObservations: number;
+  };
+  workerExhaustion: {
+    highCaptures: number;
+    highConcurrency: number;
+    highConfidenceCaptures: number;
+  };
+  compilePressure: {
+    highCaptures: number;
+    highConcurrency: number;
+    highConfidenceCaptures: number;
+    highConfidenceVariants: number;
+  };
+  transactions: {
+    mediumAgeSeconds: number;
+    highAgeSeconds: number;
+  };
+  plans: {
+    mediumEstimateRatio: number;
+    highEstimateRatio: number;
+    mediumRows: number;
+    highRows: number;
+    mediumMissingIndexImpact: number;
+    mediumGrantWasteKb: number;
+    highGrantWasteKb: number;
+    mediumGrantRatio: number;
+    highGrantRatio: number;
+  };
+}
+
+export interface ThresholdProfile {
+  schemaVersion: "1.0";
+  id: string;
+  version: string;
+  name: string;
+  description: string;
+  thresholds: ThresholdProfileThresholds;
+}
+
+export interface ThresholdProfileSnapshot extends Omit<ThresholdProfile, "description"> {
+  digest: string;
+}
+
+export interface AnalysisWorkerRequest {
+  files: File[];
+  thresholdProfile: ThresholdProfileSnapshot;
+}
+
 export interface AnalysisReport {
   schemaVersion: "1.0";
   createdAt: string;
@@ -244,13 +342,16 @@ export interface AnalysisReport {
   findings: Finding[];
   dataQuality: DataQuality;
   redacted: boolean;
+  thresholdProfile?: ThresholdProfileSnapshot;
 }
 
 export interface RuleContext {
   inputs: AnalysisInput[];
   records: WhoIsActiveRecord[];
   plans: PlanDocument[];
+  supplementalEvidence: SupplementalEvidenceSource[];
   presentColumns: Set<string>;
+  thresholds: ThresholdProfileThresholds;
 }
 
 export interface RuleDefinition {
@@ -260,7 +361,6 @@ export interface RuleDefinition {
   requiredColumns: string[];
   optionalColumns: string[];
   description: string;
-  thresholds: Record<string, number>;
   references: { label: string; url: string }[];
   evaluate(context: RuleContext): Finding[];
 }

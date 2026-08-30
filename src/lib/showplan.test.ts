@@ -73,11 +73,23 @@ describe("Showplan parser", () => {
     expect(statement.queryIdentity?.queryPlanHash).toBe("0x2222");
     expect(statement.nonParallelPlanReason).toBe("TSQLUserDefinedFunctionsNotParallelizable");
     expect(statement.earlyAbortReason).toBe("TimeOut");
+    expect(statement.optimizationLevel).toBe("FULL");
     expect(statement.degreeOfParallelism).toBe(1);
+    expect(statement.compileTimeMs).toBe(45);
     expect(statement.compileCpuMs).toBe(40);
+    expect(statement.compileMemoryKb).toBe(1024);
     expect(statement.operators[0].hasScalarFunction).toBe(true);
     expect(statement.operators[0].warnings).not.toContain("Residual predicate");
     expect(statement.operators[0].nonSargablePredicate).toBeNull();
+  });
+
+  it("drops malformed compile numerics and emits value-free warnings", () => {
+    const xml = `<ShowPlanXML Version="1.6" xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan"><BatchSequence><Batch><Statements><StmtSimple StatementText="SELECT 1"><QueryPlan CompileTime="12ms" CompileCPU="Infinity" CompileMemory="-1"><RelOp NodeId="0" PhysicalOp="Constant Scan" LogicalOp="Constant Scan" /></QueryPlan></StmtSimple></Statements></Batch></BatchSequence></ShowPlanXML>`;
+    const plan = parseShowplan(xml, "source", "malformed.sqlplan");
+    expect(plan.statements[0]).toMatchObject({ compileTimeMs: null, compileCpuMs: null, compileMemoryKb: null });
+    expect(plan.warnings).toHaveLength(3);
+    expect(plan.warnings.join(" ")).toMatch(/CompileTime.*CompileCPU.*CompileMemory/);
+    expect(plan.warnings.join(" ")).not.toMatch(/12ms|Infinity|-1/);
   });
 
   it("distinguishes ordinary scan predicates from seek residuals", () => {
@@ -89,6 +101,13 @@ describe("Showplan parser", () => {
     expect(seek.seekPredicate).toBe("(10)");
     expect(seek.residualPredicate).toBe("[dbo].[T].[Flag]=(1)");
     expect(seek.warnings).toContain("Residual predicate");
+  });
+
+  it("does not treat a hash join ProbeResidual as an actionable access-path residual predicate", () => {
+    const xml = `<ShowPlanXML Version="1.6" xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan"><BatchSequence><Batch><Statements><StmtSimple StatementText="SELECT 1"><QueryPlan><RelOp NodeId="1" PhysicalOp="Hash Match" LogicalOp="Inner Join"><Hash><HashKeysBuild><ColumnReference Column="Id" /></HashKeysBuild><HashKeysProbe><ColumnReference Column="Id" /></HashKeysProbe><ProbeResidual><ScalarOperator ScalarString="[a].[Id]=[b].[Id]" /></ProbeResidual></Hash></RelOp></QueryPlan></StmtSimple></Statements></Batch></BatchSequence></ShowPlanXML>`;
+    const operator = parseShowplan(xml, "probe", "probe.sqlplan").statements[0].operators[0];
+    expect(operator.residualPredicate).toBeNull();
+    expect(operator.warnings).not.toContain("Residual predicate");
   });
 
   it("marks a leading-wildcard scan as structured non-SARGable evidence", () => {

@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { AnalysisInput, WhoIsActiveRecord } from "../types";
+import type { AnalysisInput, ThresholdProfile, WhoIsActiveRecord } from "../types";
 import { normalizeRows } from "../lib/normalize";
 import { parseShowplan } from "../lib/showplan";
+import { deepAnalysisProfileForFinding } from "../deepAnalysis/profile";
 import { analyze } from "./engine";
+import { createThresholdProfileSnapshot, DEFAULT_THRESHOLD_PROFILE, DEFAULT_THRESHOLD_PROFILE_SNAPSHOT } from "./thresholdProfiles";
 
 const input: AnalysisInput = { id: "sample", fileName: "sample.csv", size: 100, format: "csv", rowCount: 0, recognizedColumns: ["session_id", "blocking_session_id", "blocked_session_count", "collection_time", "start_time", "status", "open_tran_count", "wait_info", "CPU", "reads"], unknownColumns: [], warnings: [] };
 
@@ -48,6 +50,18 @@ describe("diagnostic engine", () => {
     expect(report.findings.find((finding) => finding.ruleId === "PLAN-UNAVAILABLE")?.relatedFindings).toEqual([]);
   });
 
+  it("evaluates scheduler-pressure availability only when scheduler counters were imported", () => {
+    const headers = ["session_id", "collection_time", "start_time"];
+    const source: AnalysisInput = { id: "limited", fileName: "limited.csv", size: 100, format: "csv", rowCount: 1, recognizedColumns: headers, unknownColumns: [], warnings: [] };
+    const normalized = normalizeRows(source.id, [headers, [51, "2026-08-22T12:00:00Z", "2026-08-22T11:59:00Z"]], 0);
+
+    const withoutCounters = analyze([source], normalized, []);
+    expect(withoutCounters.dataQuality.notEvaluatedRules).not.toContain("CPU and scheduler pressure");
+
+    const withCounters = analyze([source], normalized, [], DEFAULT_THRESHOLD_PROFILE_SNAPSHOT, [{ id: "scheduler", sourceId: "scheduler", fileName: "scheduler.csv", kind: "Scheduler counters", samples: [], rowCount: 0 }]);
+    expect(withCounters.dataQuality.notEvaluatedRules).toContain("CPU and scheduler pressure");
+  });
+
   it("orders confidence High, Medium, then Low within the same severity", () => {
     const report = analyze([{ ...input, rowCount: 3 }], records(), []);
     const highFindings = report.findings.filter((finding) => finding.severity === "High");
@@ -63,6 +77,30 @@ describe("diagnostic engine", () => {
     const blocking = report.findings.find((finding) => finding.ruleId === "WIA-BLOCKING");
     expect(blocking?.severity).toBe("High");
     expect(blocking?.summary).toMatch(/5 downstream/);
+  });
+
+  it("uses one supplied profile for rule decisions and persists that exact snapshot", async () => {
+    const headers = ["session_id", "blocking_session_id", "collection_time"];
+    const rows = [headers, [51, null, "2026-08-22T12:00:00Z"], ...[52, 53, 54, 55, 56].map((session) => [session, 51, "2026-08-22T12:00:00Z"] )];
+    const source: AnalysisInput = { id: "profile-blocking", fileName: "profile-blocking.csv", size: 100, format: "csv", rowCount: 6, recognizedColumns: headers, unknownColumns: [], warnings: [] };
+    const normalized = normalizeRows(source.id, rows, 0);
+    const defaultReport = analyze([source], normalized, []);
+    const custom = structuredClone(DEFAULT_THRESHOLD_PROFILE) as ThresholdProfile;
+    custom.id = "dba.blocking-six";
+    custom.name = "DBA blocking six";
+    custom.thresholds.blocking.highVictims = 6;
+    const customSnapshot = await createThresholdProfileSnapshot(custom);
+    const customReport = analyze([source], normalized, [], customSnapshot);
+
+    expect(defaultReport.thresholdProfile).toEqual(DEFAULT_THRESHOLD_PROFILE_SNAPSHOT);
+    expect(defaultReport.findings.find((finding) => finding.ruleId === "WIA-BLOCKING")?.severity).toBe("High");
+    expect(customReport.thresholdProfile).toEqual(customSnapshot);
+    expect(customReport.findings.find((finding) => finding.ruleId === "WIA-BLOCKING")?.severity).toBe("Medium");
+    const withoutBlocking = (report: typeof defaultReport) => report.findings
+      .filter((finding) => finding.ruleId !== "WIA-BLOCKING")
+      .map(({ ruleId, severity, confidence, title }) => ({ ruleId, severity, confidence, title }))
+      .sort((left, right) => left.ruleId.localeCompare(right.ruleId));
+    expect(withoutBlocking(customReport)).toEqual(withoutBlocking(defaultReport));
   });
 
   it("builds one blocking incident from the true root and labels intermediate blockers", () => {
@@ -150,6 +188,39 @@ describe("diagnostic engine", () => {
     expect(finding.nextCapture).toMatchObject({ title: "Capture a representative actual plan", command: undefined });
   });
 
+  it("adds ordered same-statement compile context without changing findings or grades", () => {
+    const xml = `<ShowPlanXML Version="1.6" xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan"><BatchSequence><Batch><Statements><StmtSimple StatementText="SELECT 1" StatementType="SELECT" StatementOptmEarlyAbortReason="TimeOut" StatementOptmLevel="FULL&lt;unsafe"><QueryPlan CompileTime="45" CompileCPU="40" CompileMemory="4096"><RelOp NodeId="0" PhysicalOp="Constant Scan" LogicalOp="Constant Scan" EstimateRows="1" /></QueryPlan></StmtSimple></Statements></Batch></BatchSequence></ShowPlanXML>`;
+    const withoutContext = xml.replace(' StatementOptmEarlyAbortReason="TimeOut" StatementOptmLevel="FULL&lt;unsafe"', "").replace(' CompileTime="45" CompileCPU="40" CompileMemory="4096"', "");
+    const source: AnalysisInput = { id: "qualified-plan", fileName: "qualified.sqlplan", size: xml.length, format: "sqlplan", rowCount: 0, recognizedColumns: [], unknownColumns: [], warnings: [] };
+    const qualified = analyze([source], [], [parseShowplan(xml, source.id, source.fileName)]);
+    const baseline = analyze([source], [], [parseShowplan(withoutContext, source.id, source.fileName)]);
+    expect(qualified.findings.map((item) => [item.ruleId, item.severity, item.confidence])).toEqual(baseline.findings.map((item) => [item.ruleId, item.severity, item.confidence]));
+    const finding = qualified.findings.find((item) => item.ruleId === "PLAN-RUNTIME-UNAVAILABLE")!;
+    expect(finding.qualifications?.map((item) => [item.kind, item.disposition, item.value])).toEqual([
+      ["Compile time", "Context only", "45 ms"],
+      ["Compile CPU", "Context only", "40 ms"],
+      ["Compile memory", "Context only", "4096 KB"],
+      ["Optimizer early abort", "Observed", "TimeOut"],
+      ["Optimization level", "Observed", "[redacted optimizer value]"],
+    ]);
+    expect(finding.qualifications?.every((item) => item.planId === qualified.plans[0].id && item.statementId === qualified.plans[0].statements[0].id)).toBe(true);
+    expect(finding.limitations?.join(" ")).toMatch(/causal significance.*not evaluated/i);
+    expect(deepAnalysisProfileForFinding(finding)).toBe("actual-plan");
+  });
+
+  it("keeps compile qualifications on the embedded plan finding instead of copying them to activity", () => {
+    const xml = `<ShowPlanXML Version="1.6" xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan"><BatchSequence><Batch><Statements><StmtSimple StatementText="SELECT 1" StatementType="SELECT" StatementOptmLevel="FULL"><QueryPlan CompileTime="5"><RelOp NodeId="0" PhysicalOp="Constant Scan" LogicalOp="Constant Scan" /></QueryPlan></StmtSimple></Statements></Batch></BatchSequence></ShowPlanXML>`;
+    const headers = ["session_id", "collection_time", "start_time", "open_tran_count", "query_plan"];
+    const source: AnalysisInput = { id: "embedded-qualified", fileName: "capture.csv", size: xml.length, format: "csv", rowCount: 1, recognizedColumns: headers, unknownColumns: [], warnings: [] };
+    const report = analyze([source], normalizeRows(source.id, [headers, [51, "2026-08-22T12:00:00Z", "2026-08-22T11:50:00Z", 1, xml]], 0), []);
+    const activity = report.findings.find((item) => item.ruleId === "WIA-TRANSACTION")!;
+    const plan = report.findings.find((item) => item.ruleId === "PLAN-RUNTIME-UNAVAILABLE")!;
+    expect(activity.qualifications).toBeUndefined();
+    expect(plan.qualifications?.map((item) => item.kind)).toEqual(["Compile time", "Optimization level"]);
+    expect(activity.relatedFindings?.some((link) => link.findingId === plan.id && /embedded plan/i.test(link.reason))).toBe(true);
+    expect(plan.relatedFindings?.some((link) => link.findingId === activity.id && /embedded plan/i.test(link.reason))).toBe(true);
+  });
+
   it("ranks resource use against peers in the same capture point", () => {
     const headers = ["session_id", "collection_time", "start_time", "CPU"];
     const rows: unknown[][] = [headers, [51, "2026-08-22T12:00:00Z", "2026-08-22T11:50:00Z", 100]];
@@ -215,6 +286,7 @@ describe("diagnostic engine", () => {
     const source: AnalysisInput = { id: "predicate-plan", fileName: "predicate.sqlplan", size: xml.length, format: "sqlplan", rowCount: 0, recognizedColumns: [], unknownColumns: [], warnings: [] };
     const residuals = analyze([source], [], [parseShowplan(xml, source.id, source.fileName)]).findings.filter((finding) => finding.ruleId === "PLAN-RESIDUAL-PREDICATE");
     expect(residuals).toHaveLength(1);
+    expect(residuals[0]).toMatchObject({ severity: "Low", confidence: "Low" });
     expect(residuals[0].evidence).toEqual(expect.arrayContaining([{ label: "Node", value: "2" }, { label: "Predicate", value: "[dbo].[T].[Flag]=(1)" }]));
   });
 

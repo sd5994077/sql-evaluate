@@ -2,7 +2,19 @@
 
 All notable changes to SQL Evaluate are documented here.
 
-## Unreleased — 2026-08-29
+## Unreleased — 2026-08-31
+
+### Added
+
+- Added configurable **threshold profiles**: every diagnostic threshold (blocking, resources, waits, worker exhaustion, compilation pressure, transactions, and plans) is now supplied by a validated, versioned, SHA-256–digested profile. The built-in `builtin.default` profile preserves SQL Evaluate 1.3.0 behavior exactly.
+- Added a **Threshold Profile Manager** panel: size-limited import with a store-before-activate preview, export of the active profile, cloning of the published defaults, deletion of custom profiles, an exact-thresholds disclosure, and a reminder that profile names appear in reports and exports. Profiles and the active selection persist locally; invalid or conflicting stored profiles are quarantined with a warning rather than blocking startup.
+- Recorded the resolved threshold profile (name, id, version, and SHA-256 digest) in every report and in the Data Quality view, JSON, CSV, printable HTML, and run archive; report export is refused when no profile was resolved.
+- Added **supplemental evidence** recognition in the base analysis: scheduler, worker-thread, compilation, memory, and Query Store counter exports (CSV/TSV) are now recognized and used to corroborate findings instead of being rejected as non-`sp_WhoIsActive` input.
+- Added the **`WIA-SCHEDULER-PRESSURE`** rule: it correlates a runnable, CPU-consuming head blocker with sustained `SOS_SCHEDULER_YIELD` waits and three independently rising server scheduler counters, and frames the blocking chain as a downstream effect of CPU pressure rather than the primary condition.
+- Added a **Critical** severity level. Worker-thread pool exhaustion is raised to Critical only when supplemental worker counters confirm active workers reached the configured ceiling while the work queue was still growing; compilation-pressure confidence rises when compilation/batch counters corroborate the wait.
+- Added an explicit **healthy-capture** result: when at least two capture points contain no actionable finding, the report states a clean baseline instead of leaving it unsaid.
+- Added **compile and optimizer context** as finding qualifications — compile time, compile CPU, compile memory, optimizer early-abort reason, and optimization level are surfaced as "context only" or "observed" and are never interpreted as severity.
+- Added a twelve-case opaque **stress-test suite** (`fixtures/STRESS-01`–`STRESS-12`) and a `tools/stress-run.ts` runner covering threshold boundaries, special negative blocking owners, conflicting `THREADPOOL`/compile-semaphore waits, benign-wait suppression, missing-column Not Evaluated behavior, awkward-but-valid ingestion (multi-sheet workbooks, UTF-16LE tab-delimited files, grouped-integer wait strings, duplicate headers), and embedded-vs-standalone plan correlation.
 
 ### Fixed
 
@@ -12,6 +24,11 @@ All notable changes to SQL Evaluate are documented here.
 - Recognized Unicode `LIKE N'%…'` leading-wildcard predicates as supported non-SARGable scan evidence.
 - Reset finding and activity filters when a new capture or saved report is opened, preventing stale record IDs from hiding the new report's activity.
 - Neutralized spreadsheet-formula prefixes in CSV exports and rejected invalid cap metadata during report import.
+- Disclosed the analyzed workbook and worksheet name in Data Quality and every export so multi-sheet workbook selection is auditable.
+- Listed "Runtime plan checks" among the Not Evaluated rule groups whenever an estimated-only plan yields `PLAN-RUNTIME-UNAVAILABLE`, so the count of unavailable groups is complete.
+- Stopped treating a hash join's `ProbeResidual` equality verification as an access-path residual predicate, preventing a spurious residual-predicate finding on clean hash joins.
+- Rejected non-finite, negative, or non-numeric Showplan `CompileTime`, `CompileCPU`, and `CompileMemory` attributes with a plan warning instead of coercing them.
+- Constrained optimizer tokens and compile values echoed into findings and exports to a safe character set, with a redaction fallback, and validated the new qualification and compile fields (bounded lengths, ordered kinds) during report import.
 
 ### Improved
 
@@ -20,9 +37,14 @@ All notable changes to SQL Evaluate are documented here.
 - Kept every tab's controlled panel target in the DOM and added automated UI coverage for tab relationships, keyboard focus, and report-state reset.
 - Added session filtering, sortable columns, 100-row paging, and direct affected-row navigation to the Activity view.
 
+### Changed
+
+- `processInputFiles` now requires a threshold-profile snapshot in its options and verifies its digest before analysis; `analyze` accepts the resolved profile and optional supplemental evidence; `findingsCsv` accepts the full report; report validation is split into a synchronous `validateReportShape` and an async `validateReport` that performs digest verification. Imported reports without a resolved profile are marked legacy rather than rejected.
+
 ### Verified
 
-- Full suite: 87 passed, 1 intentionally skipped; production build passed; dependency audit reported zero vulnerabilities.
+- Full suite: 199 passed, 1 intentionally skipped; `tsc -b` type-check, production build, and dependency audit all clean (zero vulnerabilities).
+- `tools/stress-run.ts` reports all twelve `STRESS` packages passing against the built-in default profile.
 - Headless desktop and 390×844 checks passed for keyboard tabs, affected-row navigation, activity paging/filtering/sorting, cap disclosure, console errors, and horizontal overflow.
 - Browser traffic remained limited to `127.0.0.1` during verification.
 

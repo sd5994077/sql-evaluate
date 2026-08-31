@@ -792,6 +792,7 @@ export function analyze(inputs: AnalysisInput[], records: WhoIsActiveRecord[], s
     }));
   }
   const findingCaps: FindingCapDisclosure[] = [...capCounts.entries()].flatMap(([ruleId, counts]) => counts.suppressedCount ? [{ ruleId, ...counts, order: "Descending diagnostic impact" as const }] : []);
+  if (findings.some((finding) => finding.ruleId === "PLAN-RUNTIME-UNAVAILABLE")) notEvaluatedRules.push("Runtime plan checks");
   const present = [...presentColumns];
   const blockingOwnerSessionIds = new Set(records.map((record) => record.blockingSessionId).filter((sessionId): sessionId is number => (sessionId ?? 0) > 0));
   const dataQuality: DataQuality = {

@@ -178,6 +178,17 @@ describe("analysis navigation", () => {
     expect(screen.getByText(DEFAULT_THRESHOLD_PROFILE_SNAPSHOT.digest)).toBeTruthy();
   });
 
+  it("discloses the worksheet selected from a workbook in Data Quality", async () => {
+    const { container } = render(<App />);
+    const workbookReport = report("workbook.xlsx", [record("r1", 51)], []);
+    workbookReport.inputs[0].sheetName = "Live Capture";
+    await uploadSavedReport(container, workbookReport, "workbook.sqleval.json");
+
+    fireEvent.click(screen.getByRole("tab", { name: /data quality/i }));
+    expect(screen.getByText("Worksheet analyzed")).toBeTruthy();
+    expect(screen.getByText(/workbook\.xlsx.*Live Capture/i)).toBeTruthy();
+  });
+
   it("sends the selected exact profile snapshot to the next analysis worker", async () => {
     let posted: unknown;
     class FakeWorker {

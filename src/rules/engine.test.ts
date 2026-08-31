@@ -188,6 +188,14 @@ describe("diagnostic engine", () => {
     expect(finding.nextCapture).toMatchObject({ title: "Capture a representative actual plan", command: undefined });
   });
 
+  it("lists estimated-plan runtime limitations in Data Quality", () => {
+    const xml = `<ShowPlanXML Version="1.6" xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan"><BatchSequence><Batch><Statements><StmtSimple StatementText="SELECT 1" StatementType="SELECT"><QueryPlan><RelOp NodeId="0" PhysicalOp="Constant Scan" LogicalOp="Constant Scan" EstimateRows="1" /></QueryPlan></StmtSimple></Statements></Batch></BatchSequence></ShowPlanXML>`;
+    const source: AnalysisInput = { id: "estimated-quality", fileName: "estimated.sqlplan", size: xml.length, format: "sqlplan", rowCount: 0, recognizedColumns: [], unknownColumns: [], warnings: [] };
+    const report = analyze([source], [], [parseShowplan(xml, source.id, source.fileName)]);
+
+    expect(report.dataQuality.notEvaluatedRules).toContain("Runtime plan checks");
+  });
+
   it("adds ordered same-statement compile context without changing findings or grades", () => {
     const xml = `<ShowPlanXML Version="1.6" xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan"><BatchSequence><Batch><Statements><StmtSimple StatementText="SELECT 1" StatementType="SELECT" StatementOptmEarlyAbortReason="TimeOut" StatementOptmLevel="FULL&lt;unsafe"><QueryPlan CompileTime="45" CompileCPU="40" CompileMemory="4096"><RelOp NodeId="0" PhysicalOp="Constant Scan" LogicalOp="Constant Scan" EstimateRows="1" /></QueryPlan></StmtSimple></Statements></Batch></BatchSequence></ShowPlanXML>`;
     const withoutContext = xml.replace(' StatementOptmEarlyAbortReason="TimeOut" StatementOptmLevel="FULL&lt;unsafe"', "").replace(' CompileTime="45" CompileCPU="40" CompileMemory="4096"', "");

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan" Version="1.539" Build="16.0.4165.4">
+  <BatchSequence><Batch><Statements>
+    <StmtSimple StatementText="SELECT synthetic aurora conflict workload" StatementType="SELECT" PlanHandle="0xBB02" QueryHash="0xA200" QueryPlanHash="0xA2A" QueryStoreQueryId="7002" QueryStorePlanId="7102" DatabaseId="11" RetrievedFromCache="true">
+      <QueryPlan DegreeOfParallelism="2"><RelOp NodeId="3" PhysicalOp="Hash Match" LogicalOp="Aggregate" EstimateRows="50000" /></QueryPlan>
+    </StmtSimple>
+    <StmtSimple StatementText="SELECT synthetic delta lookalike workload" StatementType="SELECT" PlanHandle="0xD601" QueryHash="0xD600" QueryPlanHash="0xD6A" DatabaseId="11" RetrievedFromCache="true">
+      <QueryPlan DegreeOfParallelism="1"><RelOp NodeId="4" PhysicalOp="Sort" LogicalOp="Sort" EstimateRows="90000" /></QueryPlan>
+    </StmtSimple>
+  </Statements></Batch></BatchSequence>
+</ShowPlanXML>

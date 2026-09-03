@@ -1,0 +1,2 @@
+Warnings,Executions,Database Name,PlanHandle,SQLHandle,QueryHash,QueryPlanHash,Legacy Note
+Sort spilled to tempdb,4,SyntheticDb,0xDDD,0xSQL3,0x666,0x777,unknown column retained

@@ -19,6 +19,39 @@ describe("Deep Analysis correlation", () => {
     )).toMatchObject({ matched: true, quality: "Exact" });
   });
 
+  it("requires database context for an exact Query Store match", () => {
+    expect(matchQueryIdentity(
+      { queryStoreQueryId: 7, queryStorePlanId: 9, databaseId: 5 },
+      { queryStoreQueryId: 7, queryStorePlanId: 9, databaseId: 5 },
+    )).toMatchObject({ matched: true, quality: "Exact", conflicts: [] });
+    expect(matchQueryIdentity(
+      { queryStoreQueryId: 7, queryStorePlanId: 9 },
+      { queryStoreQueryId: 7, queryStorePlanId: 9 },
+    )).toMatchObject({ matched: true, quality: "Candidate", conflicts: [] });
+    expect(matchQueryIdentity(
+      { queryStoreQueryId: 7, queryStorePlanId: 9, databaseId: 5 },
+      { queryStoreQueryId: 7, queryStorePlanId: 9, databaseId: 6 },
+    )).toMatchObject({ matched: false, quality: "None", conflicts: ["database ID conflicts"] });
+  });
+
+  it("blocks weaker fallbacks when stronger supplied identity fields conflict", () => {
+    expect(matchQueryIdentity(
+      { planHandle: "0xA", queryHash: "0xQ", queryPlanHash: "0xP1" },
+      { planHandle: "0xB", queryHash: "0xQ", queryPlanHash: "0xP1" },
+    )).toMatchObject({ matched: false, quality: "Strong", conflicts: ["plan_handle conflicts"] });
+    expect(matchQueryIdentity(
+      { sqlHandle: "0xS", statementStartOffset: 0, statementEndOffset: 20, queryHash: "0xQ", queryPlanHash: "0xP" },
+      { sqlHandle: "0xS", statementStartOffset: 22, statementEndOffset: 40, queryHash: "0xQ", queryPlanHash: "0xP" },
+    )).toMatchObject({ matched: false, quality: "None", conflicts: ["statement_start_offset conflicts", "statement_end_offset conflicts"] });
+  });
+
+  it("does not report mismatched fields as a conflict when the sources share no stable identity", () => {
+    expect(matchQueryIdentity(
+      { queryStoreQueryId: 7, queryStorePlanId: 9, databaseId: 5 },
+      { queryStoreQueryId: 8, queryStorePlanId: 10, databaseId: 6 },
+    )).toMatchObject({ matched: false, quality: "None", conflicts: [], reason: "No supported stable identifier matches." });
+  });
+
   it("keeps evidence outside the incident window contextual", () => {
     const window = { firstObservedAt: "2026-08-28T12:00:00Z", lastObservedAt: "2026-08-28T12:00:10Z", overlapQuality: "Exact" as const, explanation: "test" };
     expect(incidentOverlap("2026-08-28T12:00:05Z", window).quality).toBe("Exact");

@@ -15,7 +15,12 @@ if %SQL_EVALUATE_NODE_MAJOR% LSS 20 (
   exit /b 1
 )
 if not exist "dist\index.html" (
-  echo The production dashboard is missing. Run npm install and npm run build first.
+  echo SQL Evaluate cannot find its dashboard bundle: dist\index.html
+  echo.
+  echo Extract the entire SQL-Evaluate ZIP to a local folder, then run this file
+  echo from that extracted folder. Keep the dist and tools folders beside this file.
+  echo.
+  echo Normal users do not need to run npm install or npm run build.
   pause
   exit /b 1
 )

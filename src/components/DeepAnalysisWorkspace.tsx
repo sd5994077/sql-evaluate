@@ -7,15 +7,21 @@ import { deepCaseFindingsCsv, deepCaseJson, deepCasePrintableHtml } from "../dee
 import { downloadBlob } from "../lib/report";
 import { formatNumber } from "../lib/utils";
 import { SeverityBadge } from "./SeverityBadge";
+import { SpillTriagePanel } from "./SpillTriagePanel";
 
 interface Props {
   deepCase: DeepAnalysisCase | null;
   recommendations: Finding[];
   busy: boolean;
   onStart(finding: Finding): void;
+  onStartSpillTriage(): void;
+  onSelectSpillCandidate(candidateId: string): void;
+  onChooseSpillPlan(candidateId: string, artifactId: string, statementId: string): void;
+  onClearSpillPlan(candidateId: string): void;
   onImport(files: File[]): void;
   onSave(): void;
   onOpen(file: File): void;
+  estimateThresholds: { ratio: number; rows: number };
 }
 
 const stateOrder: DeepEvidenceState[] = ["Observed", "Supported", "Contradicted", "Not Evaluated"];
@@ -42,7 +48,11 @@ function EvidenceStateBadge({ state }: { state: DeepEvidenceState }) {
   return <span className={`deep-state deep-state-${stateClass(state)}`}><i aria-hidden="true" />{state}</span>;
 }
 
-export function DeepAnalysisWorkspace({ deepCase, recommendations, busy, onStart, onImport, onSave, onOpen }: Props) {
+function DeepShareActions({ deepCase }: { deepCase: DeepAnalysisCase }) {
+  return <div className="deep-share-actions"><span>REDACTED HANDOFF</span><button onClick={() => downloadBlob(`SQL-Evaluate_${deepCase.id}_redacted.json`, deepCaseJson(deepCase), "application/json")}>JSON</button><button onClick={() => downloadBlob(`SQL-Evaluate_${deepCase.id}_assertions.csv`, deepCaseFindingsCsv(deepCase), "text/csv;charset=utf-8")}>CSV</button><button onClick={() => downloadBlob(`SQL-Evaluate_${deepCase.id}_report.html`, deepCasePrintableHtml(deepCase), "text/html;charset=utf-8")}>Print HTML</button><small>These allowlisted reports are not reopenable. The working case ZIP remains raw and sensitive.</small></div>;
+}
+
+export function DeepAnalysisWorkspace({ deepCase, recommendations, busy, onStart, onStartSpillTriage, onSelectSpillCandidate, onChooseSpillPlan, onClearSpillPlan, onImport, onSave, onOpen, estimateThresholds }: Props) {
   const evidenceInput = useRef<HTMLInputElement>(null);
   const caseInput = useRef<HTMLInputElement>(null);
   const [copied, setCopied] = useState(false);
@@ -52,7 +62,7 @@ export function DeepAnalysisWorkspace({ deepCase, recommendations, busy, onStart
     <div className="deep-empty-intro">
       <div><span className="deep-kicker">DEEP ANALYSIS / OFFLINE CASEWORK</span><h2>Test the theory.<br /><em>Preserve the evidence.</em></h2></div>
       <p>Move beyond a finding when a bounded diagnostic check can change the conclusion. SQL Evaluate supplies read-only recipes, evaluates the returned files, and stores the investigation in a portable case—never a database.</p>
-      <div className="deep-empty-actions"><button className="button button-primary" onClick={() => caseInput.current?.click()}>Open case ZIP</button><small>Working cases may contain sensitive SQL and plans.</small></div>
+      <div className="deep-empty-actions"><button className="button button-primary" onClick={onStartSpillTriage}>Start Spill Triage</button><button className="button" onClick={() => caseInput.current?.click()}>Open case ZIP</button><small>Working cases may contain sensitive SQL and plans.</small></div>
       <input ref={caseInput} hidden type="file" accept=".sqlevalcase.zip,.zip" onChange={(event) => { const file = event.target.files?.[0]; if (file) onOpen(file); event.target.value = ""; }} />
     </div>
     <div className="deep-profile-grid">
@@ -63,6 +73,17 @@ export function DeepAnalysisWorkspace({ deepCase, recommendations, busy, onStart
       {recommendations.slice(0, 5).map((finding) => { const profile = deepAnalysisProfileForFinding(finding); return <button key={finding.id} onClick={() => onStart(finding)}><SeverityBadge severity={finding.severity} /><span><strong>{finding.title}</strong><small>{profile ? profileLabel(profile) : "Deep Analysis"} · {finding.confidence} confidence</small></span><b>START CASE →</b></button>; })}
       {!recommendations.length && <div className="empty-table">No current finding has a bounded Deep Analysis profile.</div>}
     </div>
+  </section>;
+
+  if (deepCase.profileId === "spill-triage") return <section className="deep-workspace">
+    <header className="deep-case-head">
+      <div><span className="deep-kicker">CASE / {deepCase.id}</span><h2>{deepCase.title}</h2><p>Rank imported spill evidence, then connect the selected cached variant to a plan through stable SQL Server identity.</p></div>
+      <div className="deep-case-actions"><span className="sensitive-chip">SENSITIVE WORKING CASE</span><button className="button" disabled={busy} onClick={() => caseInput.current?.click()}>Open case</button><button className="button" disabled={busy} onClick={() => evidenceInput.current?.click()}>Import evidence</button><button className="button button-save" disabled={busy} onClick={onSave}>{busy ? "Preparing…" : "Save case ZIP"}</button></div>
+      <input ref={caseInput} hidden type="file" accept=".sqlevalcase.zip,.zip" onChange={(event) => { const file = event.target.files?.[0]; if (file) onOpen(file); event.target.value = ""; }} />
+      <input ref={evidenceInput} data-testid="spill-triage-evidence-input" hidden multiple type="file" accept=".csv,.tsv,.xlsx,.xls,.sqlplan,.xml" onChange={(event) => { onImport([...event.target.files ?? []]); event.target.value = ""; }} />
+    </header>
+    <SpillTriagePanel spillTriage={deepCase.spillTriage ?? { candidates: [], selectedCandidateId: null, imports: [], plans: [], manualPlanSelections: [] }} onSelect={onSelectSpillCandidate} onChoosePlan={() => evidenceInput.current?.click()} onChooseStatement={onChooseSpillPlan} onClearStatement={onClearSpillPlan} estimateThresholds={estimateThresholds} />
+    <DeepShareActions deepCase={deepCase} />
   </section>;
 
   const planAssertion = deepCase.assertions.find((item) => item.id === "plan-captured");
@@ -84,7 +105,7 @@ export function DeepAnalysisWorkspace({ deepCase, recommendations, busy, onStart
 
   return <section className="deep-workspace">
     <header className="deep-case-head">
-      <div><span className="deep-kicker">CASE / {deepCase.id}</span><h2>{deepCase.title}</h2><p>Started from <b>{deepCase.sourceFinding.title}</b>. Every link below is labeled by what the imported evidence can support.</p></div>
+      <div><span className="deep-kicker">CASE / {deepCase.id}</span><h2>{deepCase.title}</h2><p>Started from <b>{deepCase.sourceFinding?.title ?? (deepCase.origin?.kind === "manual" ? deepCase.origin.label : "manual evidence import")}</b>. Every link below is labeled by what the imported evidence can support.</p></div>
       <div className="deep-case-actions"><span className="sensitive-chip">SENSITIVE WORKING CASE</span><button className="button" disabled={busy} onClick={() => caseInput.current?.click()}>Open case</button><button className="button" disabled={busy} onClick={() => evidenceInput.current?.click()}>Import evidence</button><button className="button button-save" disabled={busy} onClick={onSave}>{busy ? "Preparing…" : "Save case ZIP"}</button></div>
       <input ref={caseInput} hidden type="file" accept=".sqlevalcase.zip,.zip" onChange={(event) => { const file = event.target.files?.[0]; if (file) onOpen(file); event.target.value = ""; }} />
       <input ref={evidenceInput} hidden multiple type="file" accept=".csv,.tsv,.xlsx,.xls,.sqlplan,.xml,.json,.txt" onChange={(event) => { onImport([...event.target.files ?? []]); event.target.value = ""; }} />
@@ -101,7 +122,7 @@ export function DeepAnalysisWorkspace({ deepCase, recommendations, busy, onStart
         <article className="narrative-open"><span>Unanswered</span>{deepCase.narrative.unanswered.slice(0, 4).map((item) => <p key={item}>{item}</p>)}</article>
       </div>
       <div className="narrative-next"><span>Next discriminating check</span><strong>{deepCase.narrative.nextCheck}</strong></div>
-      <div className="deep-share-actions"><span>REDACTED HANDOFF</span><button onClick={() => downloadBlob(`SQL-Evaluate_${deepCase.id}_redacted.json`, deepCaseJson(deepCase), "application/json")}>JSON</button><button onClick={() => downloadBlob(`SQL-Evaluate_${deepCase.id}_assertions.csv`, deepCaseFindingsCsv(deepCase), "text/csv;charset=utf-8")}>CSV</button><button onClick={() => downloadBlob(`SQL-Evaluate_${deepCase.id}_report.html`, deepCasePrintableHtml(deepCase), "text/html;charset=utf-8")}>Print HTML</button><small>The working case ZIP remains raw and sensitive.</small></div>
+      <DeepShareActions deepCase={deepCase} />
     </section>}
 
     <section className="causal-board" aria-labelledby="causal-board-title">

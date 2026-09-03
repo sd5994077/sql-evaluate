@@ -6,6 +6,12 @@ All notable changes to SQL Evaluate are documented here.
 
 ### Added
 
+- Added **Spill Triage**, a manual or finding-origin Deep Analysis workflow that normalizes version-tolerant `sp_BlitzCache` CSV/XLSX exports, ranks valid numeric spill evidence deterministically, and preserves warning-only and malformed rows as unranked evidence.
+- Added separate cumulative-impact and per-execution-severity callouts, explicit top-N ambiguity wording, row-level Data Quality, distinct plan-handle variants, and guarded administrative command provenance.
+- Added stable-identity candidate-to-plan correlation plus structured Sort/Hash spill details, operator input topology, and earliest upstream major estimate-error diagnosis for actual plans. Cached and estimated plans remain compile-only.
+- Added Deep Analysis schema 1.3 with manual case origins, portable Spill Triage state, and validated manual statement choices for genuinely ambiguous strong matches; cases from schemas 1.0–1.2 still migrate on open.
+- Added a third blind Spill Triage fixture covering same-batch duplicate files, database-scoped Query Store conflicts, contradictory cell/header units, manual ambiguity resolution, and redacted-handoff sentinels.
+
 - Added configurable **threshold profiles**: every diagnostic threshold (blocking, resources, waits, worker exhaustion, compilation pressure, transactions, and plans) is now supplied by a validated, versioned, SHA-256–digested profile. The built-in `builtin.default` profile preserves SQL Evaluate 1.3.0 behavior exactly.
 - Added a **Threshold Profile Manager** panel: size-limited import with a store-before-activate preview, export of the active profile, cloning of the published defaults, deletion of custom profiles, an exact-thresholds disclosure, and a reminder that profile names appear in reports and exports. Profiles and the active selection persist locally; invalid or conflicting stored profiles are quarantined with a warning rather than blocking startup.
 - Recorded the resolved threshold profile (name, id, version, and SHA-256 digest) in every report and in the Data Quality view, JSON, CSV, printable HTML, and run archive; report export is refused when no profile was resolved.
@@ -18,6 +24,12 @@ All notable changes to SQL Evaluate are documented here.
 
 ### Fixed
 
+- Converted explicitly labeled spill byte/KiB/MiB/GiB columns to 8 KB pages before ranking, with the source conversion retained in the candidate explanation.
+- Corrected Spill Triage summary identity for Query Store-only candidates, distinguished reported zero totals from missing values, and disclosed worksheet-header position, ignored sheets, and stable-identity conflicts.
+- Added candidate-specific accessible button names and exposed actual-plan DOP, spilled-thread count, and tempdb file count in operator evidence.
+- Replaced object-spread handoff redaction with a separate allowlisted JSON/CSV/HTML report model, excluded raw evidence and identifiers structurally, and neutralized spreadsheet-formula prefixes in the assertion CSV.
+- Required database context for exact Query Store correlation, ignored identity conflicts from unrelated plans, blocked stronger-identity contradictions, and added a reversible manual chooser only for equally strong non-conflicting statement matches.
+- Removed byte-identical evidence before parsing, found embedded plans from detected worksheet headers, clamped candidate pagination, and based Spill Triage assertions and narrative on the selected candidate rather than the originating finding.
 - Parsed native single-task and multi-task `sp_WhoIsActive` wait strings without losing task count or individual durations; malformed parenthesized waits now produce a data-quality warning instead of a fabricated wait type.
 - Rejected malformed comma-grouped wait durations and invalid native task counts; worker and compilation findings now expose the maximum native task count when supplied.
 - Separated ordinary predicates, seek predicates, explicit residuals, and supported non-SARGable scan causes so clean scans and scalar-UDF plans are not mislabeled.
@@ -43,10 +55,11 @@ All notable changes to SQL Evaluate are documented here.
 
 ### Verified
 
-- Full suite: 199 passed, 1 intentionally skipped; `tsc -b` type-check, production build, and dependency audit all clean (zero vulnerabilities).
+- Full suite: 251 passed, 1 intentionally skipped; `tsc -b` type-check, production build, and dependency audit all clean (zero vulnerabilities).
 - `tools/stress-run.ts` reports all twelve `STRESS` packages passing against the built-in default profile.
 - Headless desktop and 390×844 checks passed for keyboard tabs, affected-row navigation, activity paging/filtering/sorting, cap disclosure, console errors, and horizontal overflow.
 - Browser traffic remained limited to `127.0.0.1` during verification.
+- The `CLAUDE-SPILL-003` headless pass at 375×812 confirmed keyboard candidate activation, reversible manual statement selection, database-specific conflict wording, handoff controls, no document overflow, and empty console/error logs.
 
 ## 1.3.0 — 2026-08-28
 

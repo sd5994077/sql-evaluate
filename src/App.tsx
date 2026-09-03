@@ -4,16 +4,18 @@ import type { AnalysisReport, AnalysisWorkerRequest, Finding, Severity, Threshol
 import { DropZone } from "./components/DropZone";
 import { DeepAnalysisWorkspace } from "./components/DeepAnalysisWorkspace";
 import { FindingDrawer } from "./components/FindingDrawer";
+import { InvestigationGuide } from "./components/InvestigationGuide";
 import { SeverityBadge } from "./components/SeverityBadge";
 import { ThresholdProfileManager } from "./components/ThresholdProfileManager";
 import type { DeepAnalysisCase } from "./deepAnalysis/types";
-import { addEvidenceFiles, createDeepAnalysisCase, createDeepCaseArchive, openDeepCaseArchive } from "./deepAnalysis/case";
+import { addEvidenceFiles, chooseSpillPlanStatement, clearSpillPlanStatement, createDeepAnalysisCase, createDeepCaseArchive, createSpillTriageCase, openDeepCaseArchive, selectSpillCandidate } from "./deepAnalysis/case";
 import { deepAnalysisProfileForFinding } from "./deepAnalysis/profile";
 import { downloadBlob, findingsCsv, printableReport, redactReport, validateReport } from "./lib/report";
 import { createRunArchive } from "./lib/runBundle";
 import { formatDuration, formatNumber, formatTempdbPages } from "./lib/utils";
 import { APP_VERSION } from "./version";
 import { activateThresholdProfile, addThresholdProfile, DEFAULT_THRESHOLD_PROFILE_ENTRY, deleteThresholdProfile, loadThresholdProfileState } from "./rules/thresholdProfileStore";
+import { composeInvestigationGuideSafely } from "./rules/investigationGuide";
 import type { ThresholdProfileEntry } from "./rules/thresholdProfileStore";
 
 type Tab = "findings" | "deep" | "activity" | "plans" | "quality";
@@ -85,6 +87,15 @@ function App() {
   const profileStorageRef = useRef<Storage | null>(null);
   const workerRef = useRef<Worker | null>(null);
   const closeDrawer = useCallback(() => setSelected(null), []);
+  const showInvestigationGuide = useCallback(() => {
+    setSelected(null);
+    setTab("findings");
+    window.setTimeout(() => {
+      const guide = document.getElementById("investigation-guide");
+      guide?.focus();
+      guide?.scrollIntoView?.({ block: "start" });
+    }, 0);
+  }, []);
   const resetReportView = useCallback(() => {
     setSelected(null);
     setSeverity("All");
@@ -167,7 +178,7 @@ function App() {
     if (reportFile) {
       if (files.length !== 1) { setErrors(["Open a saved .sqleval.json report by itself; other selected files were not analyzed."]); return; }
       if (reportFile.size > 100 * 1024 * 1024) { setErrors([`${reportFile.name}: saved reports are limited to 100 MB.`]); return; }
-      try { const opened = await validateReport(JSON.parse(await reportFile.text())); setReport(opened); setReportImportedLegacy(!opened.thresholdProfile); setSourceFiles([]); setDeepCase(null); setDeepFiles([]); setErrors([]); resetReportView(); setTab("findings"); }
+      try { const opened = await validateReport(JSON.parse(await reportFile.text())); setReport(opened.investigationGuide ? opened : { ...opened, investigationGuide: composeInvestigationGuideSafely(opened) }); setReportImportedLegacy(!opened.thresholdProfile); setSourceFiles([]); setDeepCase(null); setDeepFiles([]); setErrors([]); resetReportView(); setTab("findings"); }
       catch (error) { setErrors([error instanceof Error ? error.message : "Report could not be opened."]); }
       return;
     }
@@ -204,6 +215,7 @@ function App() {
     const byId = new Map(report.findings.map((finding) => [finding.id, finding]));
     return selected.relatedFindings.flatMap((link) => { const related = byId.get(link.findingId); return related ? [related] : []; });
   }, [report, selected]);
+  const selectedGuideStep = useMemo(() => selected ? report?.investigationGuide?.steps.find((step) => step.sourceFindingIds.includes(selected.id)) : undefined, [report, selected]);
   const activityRows = useMemo(() => {
     if (!report) return [];
     const affected = activityRecordIds ? new Set(activityRecordIds) : null;
@@ -292,6 +304,18 @@ function App() {
     }
   };
 
+  const startSpillTriage = () => {
+    setDeepCase(createSpillTriageCase());
+    setDeepFiles([]);
+    setErrors([]);
+    setSelected(null);
+    setTab("deep");
+  };
+
+  const selectDeepSpillCandidate = (candidateId: string) => setDeepCase((current) => current ? selectSpillCandidate(current, candidateId) : current);
+  const chooseDeepSpillPlan = (candidateId: string, artifactId: string, statementId: string) => setDeepCase((current) => current ? chooseSpillPlanStatement(current, candidateId, artifactId, statementId) : current);
+  const clearDeepSpillPlan = (candidateId: string) => setDeepCase((current) => current ? clearSpillPlanStatement(current, candidateId) : current);
+
   const importDeepEvidence = async (files: File[]) => {
     if (!deepCase || !files.length) return;
     setDeepBusy(true);
@@ -327,6 +351,7 @@ function App() {
     <main>
       <section className="hero"><div><div className="eyebrow">SQL SERVER DIAGNOSTIC CONSOLE</div><h1>Turn a capture into<br /><em>an investigation.</em></h1><p>Load <code>sp_WhoIsActive</code> output or a Showplan file. Your data stays in this browser session; findings show their evidence and limits.</p></div><div className="hero-grid" aria-hidden="true"><span>BLOCK</span><b>CHAIN</b><span>WAIT</span><b>TYPE</b><span>PLAN</span><b>XML</b></div></section>
       <DropZone disabled={loading || !profileReady} onFiles={analyzeFiles} />
+      <input id="guide-evidence-input" hidden multiple type="file" accept=".csv,.tsv,.xlsx,.xls,.sqlplan,.xml" onChange={(event) => { const selectedFiles = [...event.target.files ?? []]; const combined = [...sourceFiles, ...selectedFiles].filter((file, index, all) => all.findIndex((candidate) => candidate.name === file.name && candidate.size === file.size && candidate.lastModified === file.lastModified) === index); void analyzeFiles(combined); event.target.value = ""; }} />
       <ThresholdProfileManager entries={profileEntries} active={activeProfile} reportProfile={report?.thresholdProfile} ready={profileReady} warnings={profileWarnings} onActivate={activateProfile} onStore={storeProfile} onDelete={removeProfile} />
       {loading && <div className="processing"><span className="loader" /><div><strong>Analyzing locally</strong><p>{progress}</p></div></div>}
       {errors.length > 0 && <div className="error-panel"><strong>Some input could not be processed</strong>{errors.map((error) => <p key={error}>{error}</p>)}</div>}
@@ -341,18 +366,19 @@ function App() {
         </section>
         <section className="overview-grid"><div className="panel"><div className="panel-title"><div><span>SEVERITY PROFILE</span><strong>Findings by concern</strong></div></div><div className="severity-bars">{severities.map((item) => { const count = report.findings.filter((finding) => finding.severity === item).length; const max = Math.max(1, ...severities.map((candidate) => report.findings.filter((finding) => finding.severity === candidate).length)); return <button key={item} onClick={() => { setSeverity(item); setTab("findings"); }}><span>{item}</span><i><b className={`fill fill-${item.toLowerCase().replace(" ", "-")}`} style={{ width: `${count / max * 100}%` }} /></i><strong>{count}</strong></button>; })}</div></div><div className="panel"><div className="panel-title"><div><span>CAPTURE SIGNAL</span><strong>Waits + blocking observations</strong></div><small>Last 72 points</small></div><SignalRail report={report} /></div></section>
         <nav className="tabs" role="tablist" aria-label="Analysis views">{tabs.map((item, index) => <button key={item} id={`tab-${item}`} role="tab" aria-selected={tab === item} aria-controls={`panel-${item}`} tabIndex={tab === item ? 0 : -1} className={tab === item ? "active" : ""} onKeyDown={(event) => handleTabKeyDown(event, index)} onClick={() => setTab(item)}>{item === "quality" ? "Data quality" : item === "deep" ? "Deep Analysis" : item}<span>{item === "findings" ? report.findings.length : item === "deep" ? deepCase ? deepCase.artifacts.length : deepRecommendations.length : item === "activity" ? report.records.length : item === "plans" ? report.plans.length : worksheetInputs.length + report.dataQuality.warnings.length + report.dataQuality.notEvaluatedRules.length + (report.dataQuality.findingCaps?.length ?? 0) + (report.dataQuality.suppressedSignals?.length ?? 0)}</span></button>)}</nav>
+        {tab === "findings" && report.investigationGuide && <InvestigationGuide guide={report.investigationGuide} findings={report.findings} onSelectFinding={setSelected} onDeepAnalysis={startDeepAnalysis} onUpload={() => document.getElementById("guide-evidence-input")?.click()} />}
         {tabs.filter((item) => item !== tab).map((item) => <section key={`inactive-${item}`} id={`panel-${item}`} role="tabpanel" aria-labelledby={`tab-${item}`} hidden />)}
         {tab === "findings" && <section id="panel-findings" role="tabpanel" aria-labelledby="tab-findings" tabIndex={0} className="data-panel"><div className="filters"><input aria-label="Search findings" placeholder="Search findings…" value={query} onChange={(event) => setQuery(event.target.value)} /><select aria-label="Severity filter" value={severity} onChange={(event) => setSeverity(event.target.value as Severity | "All")}><option>All</option>{severities.map((item) => <option key={item}>{item}</option>)}</select><select aria-label="Category filter" value={category} onChange={(event) => setCategory(event.target.value)}><option>All</option>{categories.map((item) => <option key={item}>{item}</option>)}</select><span>{filtered.length} shown</span></div><div className="finding-table" role="table"><div className="finding-row finding-header" role="row"><span>Concern</span><span>Finding</span><span>Evidence</span><span>Confidence</span><span /></div>{filtered.map((item) => <button className="finding-row" role="row" key={item.id} onClick={() => setSelected(item)}><span><SeverityBadge severity={item.severity} /></span><span><strong>{item.title}</strong><small>{item.category} · {item.ruleId}</small></span><span>{item.summary}</span><span aria-label={`${item.confidence} confidence`} className={`confidence confidence-${item.confidence.toLowerCase()}`}>{item.confidence} conf.</span><span className="row-arrow">→</span></button>)}</div>{!filtered.length && <div className="empty-table">No findings match these filters.</div>}</section>}
-        {tab === "deep" && <section id="panel-deep" role="tabpanel" aria-labelledby="tab-deep" tabIndex={0} className="tabpanel"><DeepAnalysisWorkspace deepCase={deepCase} recommendations={deepRecommendations} busy={deepBusy} onStart={startDeepAnalysis} onImport={importDeepEvidence} onSave={saveDeepCase} onOpen={openDeepCase} /></section>}
+        {tab === "deep" && <section id="panel-deep" role="tabpanel" aria-labelledby="tab-deep" tabIndex={0} className="tabpanel"><DeepAnalysisWorkspace deepCase={deepCase} recommendations={deepRecommendations} busy={deepBusy} onStart={startDeepAnalysis} onStartSpillTriage={startSpillTriage} onSelectSpillCandidate={selectDeepSpillCandidate} onChooseSpillPlan={chooseDeepSpillPlan} onClearSpillPlan={clearDeepSpillPlan} onImport={importDeepEvidence} onSave={saveDeepCase} onOpen={openDeepCase} estimateThresholds={{ ratio: activeProfile.snapshot.thresholds.plans.mediumEstimateRatio, rows: activeProfile.snapshot.thresholds.plans.mediumRows }} /></section>}
         {tab === "activity" && <section id="panel-activity" role="tabpanel" aria-labelledby="tab-activity" tabIndex={0} className="data-panel"><div className="section-intro"><div><span>RAW ACTIVITY</span><strong>{activityRecordIds ? `${activityRows.length} affected row${activityRows.length === 1 ? "" : "s"}` : `${activityRows.length} normalized row${activityRows.length === 1 ? "" : "s"}`}</strong></div><p>Filter, sort, and page through normalized evidence. Original columns remain available in JSON export.</p></div><div className="activity-controls"><label>Session<input aria-label="Filter activity by session" placeholder="SPID" value={activitySession} onChange={(event) => setActivitySession(event.target.value)} /></label>{activityRecordIds && <button type="button" className="button" onClick={() => setActivityRecordIds(null)}>Clear affected-row filter</button>}<span>Rows {activityRows.length ? activityPage * ACTIVITY_PAGE_SIZE + 1 : 0}–{Math.min((activityPage + 1) * ACTIVITY_PAGE_SIZE, activityRows.length)} of {activityRows.length}</span></div><div className="raw-scroll"><table><thead><tr><th>{activitySortButton("Session", "session")}</th><th>{activitySortButton("Collected", "collected")}</th><th>{activitySortButton("Status", "status")}</th><th>{activitySortButton("Wait", "wait")}</th><th>{activitySortButton("Blocker", "blocker")}</th><th>{activitySortButton("Runtime", "runtime")}</th><th>{activitySortButton("CPU", "cpu")}</th><th>{activitySortButton("Reads", "reads")}</th><th>{activitySortButton("Writes", "writes")}</th><th>{activitySortButton("Tempdb current", "tempdb")}</th></tr></thead><tbody>{activityPageRows.map((record) => <tr key={record.id}><td>{record.sessionId ?? "—"}</td><td>{record.collectionTime ? new Date(record.collectionTime).toLocaleString() : "—"}</td><td>{record.status ?? "—"}</td><td>{record.wait?.type ?? "—"}</td><td>{record.blockingSessionId ?? "—"}</td><td>{formatDuration(record.durationSeconds)}</td><td>{formatNumber(record.cpuMs)}</td><td>{formatNumber(record.reads)}</td><td>{formatNumber(record.writes)}</td><td>{formatTempdbPages(record.tempdbCurrentPages)}</td></tr>)}</tbody></table>{!activityRows.length && <div className="empty-table">No activity rows match this filter.</div>}</div><div className="activity-pagination"><button type="button" className="button" disabled={activityPage === 0} onClick={() => setActivityPage((current) => Math.max(0, current - 1))}>Previous</button><span>Page {activityPage + 1} of {activityPages}</span><button type="button" className="button" disabled={activityPage + 1 >= activityPages} onClick={() => setActivityPage((current) => Math.min(activityPages - 1, current + 1))}>Next</button></div></section>}
         {tab === "plans" && <section id="panel-plans" role="tabpanel" aria-labelledby="tab-plans" tabIndex={0} className="data-panel"><div className="section-intro"><div><span>SHOWPLAN INVENTORY</span><strong>{report.plans.length ? `${report.plans.length} parsed document${report.plans.length === 1 ? "" : "s"}` : "No plan supplied"}</strong></div><p>Runtime evidence is available only in actual plans.</p></div><div className="plan-list">{report.plans.map((plan) => <article key={plan.id}><div><span className={plan.isActual ? "actual" : "estimated"}>{plan.isActual ? "ACTUAL" : "ESTIMATED"}</span><strong>{plan.fileName}</strong><small>Showplan {plan.version ?? "unknown version"}</small></div><b>{plan.statements.length}<small> statements</small></b>{plan.statements.slice(0, 4).map((statement) => <p key={statement.id}>{statement.statementText || statement.statementType}</p>)}</article>)}{!report.plans.length && <div className="empty-table">Import a .sqlplan or XML file, or include the query_plan column in a capture.</div>}</div></section>}
         {tab === "quality" && <section id="panel-quality" role="tabpanel" aria-labelledby="tab-quality" tabIndex={0} className="quality-grid"><div className="data-panel"><div className="section-intro"><div><span>SCHEMA COVERAGE</span><strong>{report.dataQuality.presentColumns.length} recognized columns</strong></div></div><div className="tag-list">{report.dataQuality.presentColumns.map((column) => <span className="present" key={column}>{column}</span>)}</div><details><summary>{report.dataQuality.missingColumns.length} optional columns not supplied</summary><div className="tag-list">{report.dataQuality.missingColumns.map((column) => <span key={column}>{column}</span>)}</div></details></div><div className="data-panel"><div className="section-intro"><div><span>LIMITATIONS, WARNINGS &amp; AUDIT</span><strong>What this report could not establish</strong></div></div><ul className="quality-list">{worksheetInputs.map((input) => <li key={input.id}><b>Worksheet analyzed</b>{input.fileName} · {input.sheetName}</li>)}{report.dataQuality.notEvaluatedRules.map((rule) => <li key={rule}><b>Not evaluated</b>{rule}</li>)}{report.dataQuality.warnings.map((warning) => <li key={warning}><b>Input warning</b>{warning}</li>)}{(report.dataQuality.findingCaps ?? []).map((cap) => <li key={cap.ruleId}><b>Finding cap</b>{cap.suppressedCount} additional {cap.ruleId} findings were suppressed after retaining {cap.retainedCount}, ordered by {cap.order.toLowerCase()}.</li>)}{(report.dataQuality.suppressedSignals ?? []).map((signal) => <li key={signal}><b>Suppressed signal</b>{signal}</li>)}{report.dataQuality.unknownColumns.map((column) => <li key={column}><b>Preserved unknown column</b>{column}</li>)}</ul>{!worksheetInputs.length && !report.dataQuality.notEvaluatedRules.length && !report.dataQuality.warnings.length && !(report.dataQuality.findingCaps ?? []).length && !(report.dataQuality.suppressedSignals ?? []).length && !report.dataQuality.unknownColumns.length && <div className="empty-table">No data-quality limitations were detected.</div>}</div><div className="data-panel profile-audit-panel"><div className="section-intro"><div><span>THRESHOLD PROFILE / THIS REPORT</span><strong>{report.thresholdProfile ? report.thresholdProfile.name : "Not recorded"}</strong></div></div>{report.thresholdProfile ? <><p>{report.thresholdProfile.id}@{report.thresholdProfile.version} · {report.thresholdProfile.id.startsWith("builtin.") ? "Built-in" : "Custom"}</p><code>{report.thresholdProfile.digest}</code><details><summary>View exact resolved thresholds</summary><pre>{JSON.stringify(report.thresholdProfile.thresholds, null, 2)}</pre></details></> : <p>Legacy report — threshold profile not recorded.</p>}</div></section>}
       </>}
-      {deepCase && !report && <DeepAnalysisWorkspace deepCase={deepCase} recommendations={[]} busy={deepBusy} onStart={startDeepAnalysis} onImport={importDeepEvidence} onSave={saveDeepCase} onOpen={openDeepCase} />}
-      {!report && !loading && !deepCase && <section className="trust-row"><div><span>01</span><strong>Private by construction</strong><p>No telemetry, uploads, database connection, or automatic remediation.</p></div><div><span>02</span><strong>Evidence before advice</strong><p>Severity and confidence are separate; missing data stays missing.</p></div><div><span>03</span><strong>Built for handoff</strong><p>Export a redacted report with evidence and source links.</p></div></section>}
+      {deepCase && !report && <DeepAnalysisWorkspace deepCase={deepCase} recommendations={[]} busy={deepBusy} onStart={startDeepAnalysis} onStartSpillTriage={startSpillTriage} onSelectSpillCandidate={selectDeepSpillCandidate} onChooseSpillPlan={chooseDeepSpillPlan} onClearSpillPlan={clearDeepSpillPlan} onImport={importDeepEvidence} onSave={saveDeepCase} onOpen={openDeepCase} estimateThresholds={{ ratio: activeProfile.snapshot.thresholds.plans.mediumEstimateRatio, rows: activeProfile.snapshot.thresholds.plans.mediumRows }} />}
+      {!report && !loading && !deepCase && <><section className="spill-launch"><div><span>FOCUSED WORKFLOW</span><strong>Have a sp_BlitzCache spill export?</strong><p>Rank its cached plan variants locally, then connect the highest-priority candidate to an uploaded execution plan.</p></div><button type="button" className="button button-primary" onClick={startSpillTriage}>Start Spill Triage</button></section><section className="trust-row"><div><span>01</span><strong>Private by construction</strong><p>No telemetry, uploads, database connection, or automatic remediation.</p></div><div><span>02</span><strong>Evidence before advice</strong><p>Severity and confidence are separate; missing data stays missing.</p></div><div><span>03</span><strong>Built for handoff</strong><p>Export a redacted report with evidence and source links.</p></div></section></>}
     </main>
     <footer><span>SQL EVALUATE / OFFLINE TRIAGE / v{APP_VERSION}</span><p>Recommendations are advisory. Validate against workload context.</p></footer>
-    <FindingDrawer finding={selected} relatedFindings={relatedFindings} onSelectFinding={setSelected} onDeepAnalysis={startDeepAnalysis} onShowActivity={showAffectedActivity} onClose={closeDrawer} />
+    <FindingDrawer finding={selected} guideStep={selectedGuideStep} relatedFindings={relatedFindings} onSelectFinding={setSelected} onDeepAnalysis={startDeepAnalysis} onShowActivity={showAffectedActivity} onShowGuide={showInvestigationGuide} onClose={closeDrawer} />
   </div>;
 }
 

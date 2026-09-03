@@ -101,6 +101,17 @@ The working case ZIP can contain raw identifiers, SQL text, plans, and parameter
 
 Deep Analysis correlates sources only through stable SQL Server identifiers and compatible timestamps. Supported identifiers include session/request/transaction IDs, SQL and plan handles, query and plan hashes, statement offsets, and Query Store IDs. Similar statement text is never sufficient by itself.
 
+### Spill Triage workflow
+
+1. Start a manual Spill Triage case or open it from a `PLAN-SPILL` finding.
+2. Import a CSV/XLSX `sp_BlitzCache` spill result. All recognized workbook sheets are examined locally; unknown columns and source rows remain available as provenance.
+3. Review the top-N warning and candidate Data Quality details. Warning-only, zero, and malformed rows remain visible but unranked.
+4. Compare cumulative 8 KB spill pages with average pages per execution. The default ranking is total pages, average pages, last execution, and source row; CPU, duration, and reads are context rather than a synthetic score.
+5. Select a candidate and upload a cached or actual Showplan when no unique stable-identity match is present. Query Store identity is database-scoped; a conflicting database blocks the match. If two statements share the same strongest non-conflicting identity, choose one explicitly or import statement offsets, and clear the choice if it cannot be verified.
+6. Treat a cached plan as compile-time evidence. Only an actual plan can show runtime spilling operators, node IDs, pages read/written, grant use, and the earliest major row-estimate error feeding the spill.
+
+An export with ten rows is consistent with `@Top = 10`, not proof that ten is the full population. A missing plan may have expired from cache, but SQL Evaluate cannot establish that offline. Byte-identical evidence is accepted once, explicit non-page units are converted to 8 KB pages, and a cell unit that contradicts its column unit is rejected rather than guessed. Cache-removal command text is administrative provenance, never a recommended next action.
+
 The CPU-backed blocking profile distinguishes related but different claims:
 
 - A runnable request is observed at one instant; repeated runnable scheduler queues are needed to support sustained CPU pressure.

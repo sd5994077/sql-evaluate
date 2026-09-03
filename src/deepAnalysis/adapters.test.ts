@@ -41,6 +41,16 @@ describe("Deep Analysis evidence adapters", () => {
     expect(result.observations.find((item) => item.metric === "single_use_percentage")?.value).toBeCloseTo(98.3146, 3);
   });
 
+  it("recognizes numeric BlitzCache spill evidence without requiring a warning column", () => {
+    const result = inspectEvidenceMatrix([
+      ["Total Spills", "Avg Spills", "# Executions", "Plan Handle", "Query Hash", "Query Plan Hash"],
+      [158870, 15887, 10, "0xAAA", "0x111", "0x222"],
+    ], null, "spill-cache");
+    expect(result.adapterId).toBe("sp-blitzcache");
+    expect(result.signals).toContain("spill-evidence");
+    expect(result.observations.find((item) => item.metric === "total_spill_pages")?.value).toBe(158870);
+  });
+
   it("matches granted root locks to victim waiting resources", () => {
     const result = inspectEvidenceMatrix([
       ["request_session_id", "request_status", "request_mode", "resource_type", "resource_database_id", "resource_associated_entity_id"],

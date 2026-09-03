@@ -18,6 +18,7 @@ export const DEEP_ANALYSIS_PROFILE_CATALOG = [
   { id: "memory-grants", label: "Memory grant pressure", status: "Ready", detail: "Pending grants, RESOURCE_SEMAPHORE, grant waste, spills, and concurrency." },
   { id: "plan-specific", label: "Plan-specific diagnosis", status: "Ready", detail: "Serialization, scalar UDFs, implicit conversion, residual predicates, estimates, and spills." },
   { id: "actual-plan", label: "Actual-plan acquisition", status: "Ready", detail: "Representative runtime counters without inventing conclusions from estimated plans." },
+  { id: "spill-triage", label: "Spill Triage", status: "Ready", detail: "Rank BlitzCache spill candidates, connect a stable plan identity, and inspect actual-plan operators." },
   { id: "deadlocks", label: "Deadlocks", status: "Planned", detail: "Victim graphs, lock order, transaction scope, and statement or plan evidence." },
   { id: "tempdb-io", label: "TempDB + storage", status: "Planned", detail: "File latency, allocation pressure, spills, latches, and task-level TempDB use." },
 ] as const;
@@ -30,7 +31,8 @@ export function deepAnalysisProfileForFinding(finding: Finding): DeepProfileId |
   }
   if (finding.ruleId === "WIA-WORKER-EXHAUSTION") return "worker-exhaustion";
   if (finding.ruleId === "WIA-COMPILE-PRESSURE") return "compile-pressure";
-  if (["PLAN-MEMORY-GRANT", "PLAN-SPILL"].includes(finding.ruleId) || (finding.ruleId === "WIA-WAIT" && finding.title.includes("RESOURCE_SEMAPHORE"))) return "memory-grants";
+  if (finding.ruleId === "PLAN-SPILL") return "spill-triage";
+  if (finding.ruleId === "PLAN-MEMORY-GRANT" || (finding.ruleId === "WIA-WAIT" && finding.title.includes("RESOURCE_SEMAPHORE"))) return "memory-grants";
   if (["PLAN-SERIALIZATION", "PLAN-SCALAR-UDF", "PLAN-CONVERT", "PLAN-RESIDUAL-PREDICATE", "PLAN-ESTIMATE"].includes(finding.ruleId)) return "plan-specific";
   if (finding.ruleId === "PLAN-RUNTIME-UNAVAILABLE") return "actual-plan";
   return null;

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan" Version="1.539" Build="16.0.4165.4">
+  <BatchSequence><Batch><Statements>
+    <StmtSimple StatementText="SELECT synthetic beacon workload" StatementType="SELECT" SqlHandle="0x0300" StatementStartOffset="0" StatementEndOffset="200" QueryHash="0xB300" QueryPlanHash="0xB3A" DatabaseId="11" RetrievedFromCache="true" StatementSubTreeCost="14.2">
+      <QueryPlan DegreeOfParallelism="2" CompileTime="18" CompileCPU="17" CompileMemory="2048"><RelOp NodeId="5" PhysicalOp="Hash Match" LogicalOp="Aggregate" EstimateRows="24000" EstimatedTotalSubtreeCost="14.2" /></QueryPlan>
+    </StmtSimple>
+  </Statements></Batch></BatchSequence>
+</ShowPlanXML>

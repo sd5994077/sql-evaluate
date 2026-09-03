@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AnalysisReport, Finding, WhoIsActiveRecord } from "./types";
 import App from "./App";
@@ -74,6 +74,18 @@ async function storeClone(id: string, name: string): Promise<void> {
 }
 
 describe("analysis navigation", () => {
+  it("starts a manual Spill Triage case from the landing page", async () => {
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Start Spill Triage" }));
+    expect(await screen.findByRole("heading", { name: "Spill Triage" })).toBeTruthy();
+    expect(screen.getByText(/stage 1 \/ candidate selection/i)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Import BlitzCache export" })).toBeTruthy();
+    expect(document.querySelector('[data-testid="spill-triage-evidence-input"]')).toBeInstanceOf(HTMLInputElement);
+    expect(screen.getByRole("button", { name: "JSON" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "CSV" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Print HTML" })).toBeTruthy();
+    expect(screen.getByText(/not reopenable/i)).toBeTruthy();
+  });
   it("warns that profile names are disclosed in default exports", async () => {
     render(<App />);
     expect(await screen.findByText(/profile names appear in reports and default exports/i)).toBeTruthy();
@@ -120,6 +132,47 @@ describe("analysis navigation", () => {
     await uploadSavedReport(container, report("critical.csv", [record("r1", 51)], [critical]), "critical.sqleval.json");
 
     expect(screen.getByText("1 item needs priority review")).toBeTruthy();
+  });
+
+  it("derives a progressive guide for an older report and opens its source evidence", async () => {
+    const { container } = render(<App />);
+    const resource = { ...finding(["r1"]), id: "resource-finding", ruleId: "WIA-RESOURCE", severity: "High" as const, title: "Sustained resource consumer", nextCapture: { title: "Capture resource deltas", reason: "Confirm measured growth.", command: "EXEC dbo.sp_WhoIsActive @delta_interval = 5;", expectedEvidence: ["CPU and I/O rates"], caution: "Capture briefly." } };
+    const transaction = { ...finding(["r1"]), id: "transaction-finding", ruleId: "WIA-TRANSACTION", title: "Open-transaction activity", nextCapture: { title: "Capture transaction ownership", reason: "Confirm ownership.", expectedEvidence: ["Transaction start"] } };
+    await uploadSavedReport(container, report("guided.csv", [record("r1", 51)], [resource, transaction]), "guided.sqleval.json");
+
+    expect(screen.getByRole("heading", { name: "Start here" })).toBeTruthy();
+    expect(screen.getByText("Capture short resource deltas and the execution plan")).toBeTruthy();
+    const followups = screen.getByText(/Show 1 follow-up step/i).closest("details")!;
+    expect(followups.hasAttribute("open")).toBe(false);
+    fireEvent.click(followups.querySelector("summary")!);
+    expect(followups.hasAttribute("open")).toBe(true);
+    fireEvent.click(screen.getAllByRole("button", { name: "Open evidence" })[0]);
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Sustained resource consumer" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Back to investigation step 1/i }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(document.activeElement?.id).toBe("investigation-guide");
+  });
+
+  it("labels an unsupported imported Deep Analysis profile without exposing a dead action", async () => {
+    const { container } = render(<App />);
+    const resource = { ...finding(["r1"]), id: "resource-finding", ruleId: "WIA-RESOURCE", severity: "High" as const, title: "Sustained resource consumer" };
+    const guided: AnalysisReport = {
+      ...report("future-guide.csv", [record("r1", 51)], [resource]),
+      investigationGuide: {
+        schemaVersion: "1.0",
+        conclusion: "Review imported guidance.",
+        missingEvidence: [],
+        subjects: [],
+        steps: [{ id: "guide-step-1", order: 1, title: "Future workflow", reason: "This report references a newer workflow.", actionType: "Deep Analysis", expectedEvidence: [], sourceFindingIds: [resource.id], targetFindingId: resource.id, deepAnalysisProfile: "future-profile" }],
+      },
+    };
+    await uploadSavedReport(container, guided, "future-guide.sqleval.json");
+
+    const guide = screen.getByRole("heading", { name: "Start here" }).closest("section")!;
+    expect(within(guide).getByText("Deep Analysis unavailable")).toBeTruthy();
+    expect(within(guide).getByText(/not available in this app version/i)).toBeTruthy();
+    expect(within(guide).queryByRole("button", { name: "Deep Analysis" })).toBeNull();
   });
 
   it("previews and stores an imported profile without activating it", async () => {

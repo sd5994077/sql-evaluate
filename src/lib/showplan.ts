@@ -27,6 +27,20 @@ function operatorElements(parent: XmlElement, name: string): XmlElement[] {
   return matches;
 }
 
+function directChildRelOps(parent: XmlElement): XmlElement[] {
+  const matches: XmlElement[] = [];
+  const visit = (element: XmlElement) => {
+    for (const node of Array.from(element.childNodes)) {
+      if (node.nodeType !== 1) continue;
+      const child = node as XmlElement;
+      if (elementName(child) === "RelOp") matches.push(child);
+      else visit(child);
+    }
+  };
+  visit(parent);
+  return matches;
+}
+
 function attr(element: XmlElement | undefined, name: string): string | null {
   return element?.getAttribute(name) ?? null;
 }
@@ -69,6 +83,44 @@ function operatorWarnings(relop: XmlElement): string[] {
   return [...new Set(warnings)];
 }
 
+function spillDetails(relop: XmlElement, warnings: string[]): NonNullable<PlanOperator["spillDetails"]> {
+  const detailElements = [
+    ...operatorElements(relop, "SortSpillDetails").map((element) => ({ element, kind: "Sort" as const })),
+    ...operatorElements(relop, "HashSpillDetails").map((element) => ({ element, kind: "Hash" as const })),
+    ...operatorElements(relop, "SpillToTempDb").map((element) => ({ element, kind: "Generic" as const })),
+  ];
+  const parsed = detailElements.map(({ element, kind }) => {
+    const rawAttributes: Record<string, string> = {};
+    for (let index = 0; index < element.attributes.length; index += 1) {
+      const attribute = element.attributes.item(index);
+      if (attribute) rawAttributes[attribute.name] = attribute.value;
+    }
+    const firstNumber = (...names: string[]) => {
+      for (const name of names) {
+        const value = numberAttr(element, name);
+        if (value !== null) return value;
+      }
+      return null;
+    };
+    return {
+      kind,
+      spillLevel: firstNumber("SpillLevel"),
+      spilledThreadCount: firstNumber("SpilledThreadCount"),
+      tempdbFileCount: firstNumber("TempdbFileCount"),
+      pagesWritten: firstNumber("WritesToTempDb", "PagesWritten"),
+      pagesRead: firstNumber("ReadsFromTempDb", "PagesRead"),
+      grantedMemoryKb: firstNumber("GrantedMemoryKb", "GrantedMemoryKB"),
+      usedMemoryKb: firstNumber("UsedMemoryKb", "UsedMemoryKB"),
+      requestedMemoryKb: firstNumber("RequestedMemoryKb", "RequestedMemoryKB"),
+      rawAttributes,
+    };
+  });
+  if (!parsed.length && warnings.some((warning) => /spill/i.test(warning))) {
+    parsed.push({ kind: /sort/i.test(attr(relop, "PhysicalOp") ?? "") ? "Sort" : /hash/i.test(attr(relop, "PhysicalOp") ?? "") ? "Hash" : "Generic", spillLevel: null, spilledThreadCount: null, tempdbFileCount: null, pagesWritten: null, pagesRead: null, grantedMemoryKb: null, usedMemoryKb: null, requestedMemoryKb: null, rawAttributes: {} });
+  }
+  return parsed;
+}
+
 function predicateExpression(element: XmlElement | undefined): string | null {
   if (!element) return null;
   const scalar = operatorElements(element, "ScalarOperator")
@@ -95,6 +147,7 @@ function parseOperators(statement: XmlElement): PlanOperator[] {
     const warnings = operatorWarnings(relop);
     if (residualPredicate) warnings.push("Residual predicate");
     if (hasScalarFunction) warnings.push("Scalar function");
+    const parsedSpills = spillDetails(relop, warnings);
     return {
       id: makeId("op"),
       nodeId: numberAttr(relop, "NodeId"),
@@ -111,6 +164,8 @@ function parseOperators(statement: XmlElement): PlanOperator[] {
       nonSargablePredicate,
       isParallel: attr(relop, "Parallel") === "1",
       hasScalarFunction,
+      childNodeIds: directChildRelOps(relop).map((child) => numberAttr(child, "NodeId")).filter((value): value is number => value !== null),
+      spillDetails: parsedSpills.length ? parsedSpills : undefined,
     };
   });
 }
@@ -129,7 +184,7 @@ function attachStatementWarnings(operators: PlanOperator[], warnings: string[]):
   }
 }
 
-function parseStatement(statement: XmlElement, documentWarnings: string[]): PlanStatement {
+function parseStatement(statement: XmlElement, documentWarnings: string[], statementId: string): PlanStatement {
   const queryPlan = elements(statement, "QueryPlan")[0];
   const operators = parseOperators(statement);
   const statementWarnings = queryPlan ? operatorWarnings(queryPlan) : [];
@@ -141,7 +196,7 @@ function parseStatement(statement: XmlElement, documentWarnings: string[]): Plan
   const isActual = operators.some((operator) => operator.actualRows !== null) || elements(statement, "RunTimeInformation").length > 0;
   const warnings = [...new Set([...statementWarnings, ...operators.flatMap((operator) => operator.warnings)])];
   return {
-    id: makeId("stmt"),
+    id: statementId,
     statementText: text,
     statementType: attr(statement, "StatementType") ?? statement.tagName,
     estimatedCost: numberAttr(statement, "StatementSubTreeCost"),
@@ -194,11 +249,11 @@ export function parseShowplan(xml: string, sourceId: string, fileName: string): 
   const planWarnings: string[] = [];
   const statements = ["StmtSimple", "StmtCond", "StmtCursor", "StmtUseDb", "StmtReceive"]
     .flatMap((name) => elements(document, name))
-    .map((statement) => parseStatement(statement, planWarnings));
+    .map((statement, index) => parseStatement(statement, planWarnings, `${sourceId}-stmt-${index + 1}`));
   if (!statements.length) throw new Error("No SQL statements were found in the Showplan document.");
   const root = roots[0];
   return {
-    id: makeId("plan"),
+    id: `${sourceId}-plan`,
     sourceId,
     fileName,
     version: attr(root, "Version"),

@@ -19,6 +19,7 @@ manifest.json
 results/
   analysis.sqleval.json
   findings.csv
+  investigation-guide.csv
   report.html
 normalized/
   activity.csv
@@ -28,11 +29,13 @@ source/
   <original files>          # raw-details exports only
 ```
 
-The normalized CSV has stable column names for activity fields used by the analyzer. The JSON report remains the authoritative portable analysis record.
+The investigation-guide CSV records the deterministic action order, conditions, expected evidence, cautions, source finding IDs, and optional commands. The normalized CSV has stable column names for activity fields used by the analyzer, but is header-only in a default redacted archive. The JSON report remains the authoritative portable analysis record.
+
+CSV fields that begin with spreadsheet formula characters are prefixed as text, including fields in explicitly authorized raw activity exports.
 
 ## Privacy behavior
 
-The default archive is redacted and excludes original source files. Enabling **Include raw details** can place SQL text, plans, server names, database names, login names, host names, program names, parameter values, and original uploaded files into the ZIP. Store raw archives in an access-controlled location.
+The default archive is redacted and excludes normalized activity rows and original source files. Aggregate findings, the investigation guide, and redacted parsed plan context remain available for handoff. Enabling **Include raw details** can place row-level activity, SQL text, plans, server names, database names, login names, host names, program names, parameter values, and original uploaded files into the ZIP. Store raw archives in an access-controlled location.
 
 Source SHA-256 checksums are recorded in the manifest whether or not the original files are included. A checksum can verify which source produced a run without exposing its contents.
 
@@ -46,6 +49,12 @@ For a local archive folder:
 - Back up the archive folder if the files are required as operational evidence.
 
 The browser downloads the ZIP but does not delete older files automatically.
+
+## Deep Analysis working cases and handoffs
+
+Deep Analysis uses a separate `.sqlevalcase.zip` format for reopenable working cases. It may contain raw source files, SQL text, plan XML, stable identifiers, database/object names, and manual Spill Triage statement selections, so it must be treated as sensitive. Case schema 1.3 revalidates a saved manual selection against the current evidence when the case is opened.
+
+The Deep Analysis **JSON**, **CSV**, and **Print HTML** actions produce non-reopenable handoff reports from an explicit allowlist. They exclude source names, raw values, SQL, plan XML, identities and hashes, database/object names, administrative source text, and unknown columns. Use these handoffs for wider sharing; use the working-case ZIP only when the recipient is authorized to receive the underlying evidence.
 
 ## Future database migration
 

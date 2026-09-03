@@ -2,6 +2,18 @@
 
 Release date: 2026-08-28
 
+## Spill Triage update — 2026-09-02
+
+- Added a fully offline two-stage Spill Triage workflow for version-tolerant CSV/XLSX `sp_BlitzCache` spill exports.
+- Added deterministic cumulative and per-execution spill comparisons with explicit top-N, missing-value, malformed-value, and plan-variant disclosures.
+- Added stable-identity-only connection to cached or actual Showplans. Estimated plans remain compile-only; actual plans can show spilling operator nodes, tempdb pages, grant details, and upstream row-estimate errors.
+- Kept `Remove Plan Handle From Cache` source text behind a warning and out of routine next actions. SQL Evaluate still never executes SQL or changes cache state.
+- Added Deep Analysis case schema 1.3, migration from schemas 1.0–1.2, persisted and revalidated manual statement choices, sanitized multi-shape fixtures, and accessible candidate-table interactions.
+- Incorporated the second blind review: explicit byte/KiB/MiB/GiB spill units now convert transparently to 8 KB pages; workbook selection, header position, zero values, and identity conflicts are disclosed; candidate controls have unique accessible names; and actual-plan DOP, spill threads, and tempdb files are visible.
+- Completed the post-review hardening: redacted handoffs now come from a structurally separate allowlist and cannot be reopened as working cases; Query Store matching is database-scoped; unrelated plans cannot supply misleading conflicts; duplicate files are removed before parsing; embedded plans honor detected header rows; and ambiguous strong statement matches can be explicitly selected and cleared.
+- Added a third blind fixture that plants private sentinels and tests unit contradictions, duplicate plans, cross-database identity, ambiguity, persistence, and all three handoff formats.
+- Verification completed with 251 passing tests, 1 intentional skip, a clean production type-check/build, zero audited vulnerabilities, and a 375×812 headless pass with no overflow, console errors, or non-local traffic.
+
 ## Post-review correctness update — 2026-08-29
 
 - Native multi-task `sp_WhoIsActive` waits now retain task count and all supplied duration components while preserving the maximum-duration compatibility field.

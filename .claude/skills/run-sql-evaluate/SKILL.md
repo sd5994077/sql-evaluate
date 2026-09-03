@@ -36,8 +36,8 @@ Two harnesses live beside this file:
 ## Build / test
 
 ```bash
-npm run build      # tsc -b && vite build  -> dist/ , ~1s after tsc
-npm test           # vitest run  -> 24 files pass, 1 skipped (230 pass / 1 skip)
+npm run build      # tsc -b && vite build
+npm test           # vitest run; exit 0 is the success criterion
 ```
 
 `npm run check` also exists (`test && build && npm audit`).
@@ -54,14 +54,13 @@ Expected tail:
 PASS  index.html served
 PASS  entry script referenced
 PASS  entry module transforms
-PASS  Spill Triage workspace module resolves
-PASS  no Vite startup error
+PASS  Spill Triage module transforms
 [smoke] OK
 ```
 
-Exit 0 = pass, 1 = a check failed, 2 = dev server never came up. It launches
-`npm run dev` on port **5173** (`--strictPort`) and kills the tree on exit.
-`DEP0190` deprecation noise on Windows is expected and harmless.
+Exit 0 = pass, 1 = a served-content check failed, and 2 = this harness's Vite
+child could not start. It launches the checkout's Vite CLI directly on an
+OS-assigned loopback port and stops only the process tree it created.
 
 ## Run (agent path) — drive the live app
 
@@ -93,17 +92,17 @@ Use the Browser pane.
 5. **Import fixtures.** Base64 each file in Bash, then inject:
 
    ```bash
-   base64 -w0 fixtures/CLAUDE-SPILL-001/blitzcache-evidence.csv
+   base64 -w0 <fixture-path>
    ```
 
    ```
-   javascript_tool:  window.__sqleval.injectFile("<BASE64>", "blitzcache-evidence.csv", "text/csv")
-   javascript_tool:  window.__sqleval.injectFile("<BASE64>", "evidence-a.sqlplan", "text/xml")
+   javascript_tool:  window.__sqleval.injectFile("<BASE64>", "evidence.csv", "text/csv")
+   javascript_tool:  window.__sqleval.injectFile("<BASE64>", "evidence.sqlplan", "text/xml")
    ```
 
-   `injectFile` returns `{ targeted, file, bytes }`. `targeted` **must** be
-   `.csv,.tsv,.xlsx,.xls,.sqlplan,.xml` — if it shows a longer accept list
-   ending in `.zip`, the helper hit the wrong input (see Gotchas).
+   `injectFile` returns `status: "event-dispatched"` plus the stable target,
+   accepted extensions, filename, and byte count. This confirms only that the
+   browser event was sent. Verify the visible UI result before continuing.
 
 6. **Read results.** After the CSV: `get_page_text` shows the ranked candidate
    table, "Highest cumulative impact" / "Highest per execution" cards, and the
@@ -116,10 +115,6 @@ Use the Browser pane.
 
 8. **Stop.** `mcp__Claude_Browser__preview_stop` with the `serverId` from
    step 1.
-
-Verified end-to-end this session: 12-row CSV → Rank 1 `0xA100`; `evidence-a.sqlplan`
-→ "The plan_handle values match", 2 spilling operators, Node 27 estimate error;
-clicking Investigate on Rank 2 selected `0xB200`.
 
 ## Run (human path)
 
@@ -146,20 +141,13 @@ a human, useless for scripting. Use `npm run dev` (fixed 5173) for automation.
   Browser pane can't service the OS file dialog, so `browser-inject.js` sets
   `input.files` via `DataTransfer` + `Object.defineProperty` + a `change`
   event. This is the only way to load a fixture.
-- **There are 5 file inputs; only one is the Spill Triage importer.** The
-  landing-page dropzone (index 0) also accepts `.csv`/`.sqlplan` **plus**
-  `.zip`/`.json` and treats a CSV as a who-is-active capture — injecting there
-  does nothing to Stage 1. The InvestigationGuide input has `id="guide-evidence-input"`.
-  The helper's `findImportInput()` picks the one that accepts `.sqlplan`,
-  rejects `.zip`/`.json`, and has no `id`. Confirm via the returned `targeted`.
-- **Node ≥ 20 on Windows needs `shell: true` to spawn `npm.cmd`** (EINVAL
-  otherwise). `smoke.mjs` does this and eats the resulting `DEP0190` warning.
-- **Lingering dev server on 5173.** If `preview_start` reports port 5173 in use
-  by a stray `node.exe` (e.g. after a killed `smoke.mjs`), free it:
-
-  ```bash
-  powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort 5173 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id \$_.OwningProcess -Force }"
-  ```
+- **There are several file inputs; only one is the Spill Triage importer.** The
+  helper selects only `[data-testid="spill-triage-evidence-input"]` and throws
+  unless exactly one exists. It never falls back to another input.
+- **Port 5173 belongs only to the interactive preview.** The headless smoke
+  harness uses an OS-assigned port, so it neither depends on nor stops a process
+  already listening on 5173. Stop interactive previews through `preview_stop`
+  using the `serverId` returned by `preview_start`.
 
 - **One vitest file is skipped by design** (`Skip optional generated fixture
   test in clean checkouts`) — not a failure.
@@ -168,8 +156,7 @@ a human, useless for scripting. Use `npm run dev` (fixed 5173) for automation.
 
 | Symptom | Fix |
 |---|---|
-| `preview_start` → "Port 5173 is in use … not a preview server" | Kill the stray server with the PowerShell one-liner above, retry. |
-| `injectFile` returns `targeted` ending in `.zip` / import has no effect on Stage 1 | Wrong input matched — reload the page, re-enter Spill Triage, re-paste `browser-inject.js`, retry. |
-| `smoke.mjs` exits 2 | Dev server didn't start; run `npm run dev` directly and read the Vite error. |
+| `preview_start` → "Port 5173 is in use … not a preview server" | Stop the known preview by its `serverId`; do not terminate an arbitrary port owner. |
+| `injectFile` says the Spill Triage importer count is 0 | Open a Spill Triage case, re-install the helper, and retry. |
+| `smoke.mjs` exits 2 | Its Vite child did not become ready; read the startup diagnostic and run `npm run dev` directly if more detail is needed. |
 | Blank screenshot | Expected. Use `get_page_text` / `read_page`. |
-| `spawn EINVAL` from a custom Node script launching npm | Add `shell: process.platform === "win32"` to the `spawn` options. |

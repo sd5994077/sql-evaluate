@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ShowPlanXML Version="1.6" xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan">
+  <BatchSequence><Batch><Statements>
+    <StmtSimple StatementText="SELECT synthetic workload" StatementType="SELECT" PlanHandle="0xAAA" SqlHandle="0xSQL1" QueryHash="0x111" QueryPlanHash="0x222" StatementStartOffset="0" StatementEndOffset="100">
+      <QueryPlan DegreeOfParallelism="4">
+        <MemoryGrantInfo RequestedMemory="2751080" GrantedMemory="2751080" MaxUsedMemory="2751080" />
+        <RelOp NodeId="1" PhysicalOp="Sort" LogicalOp="Sort" EstimateRows="1">
+          <Warnings SpillToTempDb="1"><SortSpillDetails SpillLevel="1" SpilledThreadCount="4" GrantedMemoryKb="2751080" UsedMemoryKb="2751080" WritesToTempDb="158870" ReadsFromTempDb="158870" /></Warnings>
+          <RunTimeInformation><RunTimeCountersPerThread Thread="0" ActualRows="805211" /></RunTimeInformation>
+          <Sort>
+            <RelOp NodeId="2" PhysicalOp="Hash Match" LogicalOp="Inner Join" EstimateRows="1">
+              <Warnings SpillToTempDb="1"><HashSpillDetails SpillLevel="2" SpilledThreadCount="4" GrantedMemoryKb="262144" UsedMemoryKb="262144" WritesToTempDb="64000" ReadsFromTempDb="64000" /></Warnings>
+              <RunTimeInformation><RunTimeCountersPerThread Thread="0" ActualRows="11000000" /></RunTimeInformation>
+              <Hash>
+                <RelOp NodeId="3" PhysicalOp="Clustered Index Scan" LogicalOp="Clustered Index Scan" EstimateRows="1">
+                  <RunTimeInformation><RunTimeCountersPerThread Thread="0" ActualRows="68700000" /></RunTimeInformation>
+                  <IndexScan><Object Schema="[dbo]" Table="[SyntheticSource]" Index="[PK_SyntheticSource]" /></IndexScan>
+                </RelOp>
+              </Hash>
+            </RelOp>
+          </Sort>
+        </RelOp>
+      </QueryPlan>
+    </StmtSimple>
+  </Statements></Batch></BatchSequence>
+</ShowPlanXML>

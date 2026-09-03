@@ -506,3 +506,38 @@ footer { color: #708995; font-size: 12px; }
   .profile-audit form, .profile-preview { grid-template-columns: 1fr; }
   .profile-preview .button { width: 100%; }
 }
+
+/* Dense operational UI still needs readable metadata at ordinary zoom. */
+.privacy-chip,
+.eyebrow, .panel-title span, .section-intro span, .report-meta span, .kpi > span,
+.hero-grid span,
+.profile-summary span, .profile-preview span, .profile-summary small, .profile-preview small, .report-profile, .profile-summary label,
+.profile-audit pre, .profile-audit form label,
+.finding-header, .finding-row small, .confidence, .severity,
+.activity-controls label, th,
+.plan-list article > b small, .actual, .estimated,
+.tag-list span, .quality-list b, footer,
+.drawer h3, .evidence-list dt,
+.blocking-context-title span, .blocked-sessions > span, .blocker-command span,
+.blocking-context-title > strong small, .blocker-facts dt,
+.chain-map-head span, .chain-map-head small, .blocking-chain-map li > div span, .blocking-chain-map li > small,
+.blocker-command small, .investigation-heading span, .confidence-basis > span, .related-signals > span, .next-capture > div > span,
+.investigation-heading > b, .confidence-basis ul, .next-capture ul, .timeline-title span, .timeline-title small, .timeline-card dt,
+.related-signals button small, .next-capture > small, .next-capture > em, .tool-card-head span, .command-block button, .tool-card > small,
+.deep-profile-grid article > span, .deep-profile-grid article small, .artifact-list article > span,
+.deep-recommendations > button > b, .sensitive-chip, .deep-state,
+.narrative-head span, .narrative-groups article > span, .narrative-next span, .capture-attempts > span,
+.deep-share-actions > span, .deep-share-actions button, .deep-share-actions small,
+.causal-verdict > span, .missing-evidence span, .missing-evidence b, .case-provenance dt, .artifact-list article small,
+.artifact-tags b, .capture-attempts article b, .case-events time, .case-events p, .overhead,
+.capture-ladder button > span, .capture-ladder button > small, .capture-ladder button > b,
+.recipe-grid span, .recipe-grid small, .deep-command button, .recipe-caution b, .recipe-caution span,
+.guide-return, .qualification-context > div > span, .qualification-context li small, .qualification-context li p,
+.qualification-context > em, .profile-audit-panel > code, .profile-audit-panel pre,
+.guide-heading span, .guide-subjects span, .guide-subjects article > div > small, .guide-subjects dt, .guide-subjects dd,
+.guide-resources span, .guide-resources b, .guide-subjects p, .guide-step-copy b, .guide-step-copy em,
+.guide-step-actions .button, .guide-action-unavailable, .guide-more > summary, .guide-gaps,
+.spill-launch span, .spill-stage-head > span, .spill-summary span, .spill-context dt, .spill-operators dt,
+.spill-table th, .spill-table button, .spill-pagination button, .spill-plan-match span, .spill-table td::before {
+  font-size: 11px !important;
+}

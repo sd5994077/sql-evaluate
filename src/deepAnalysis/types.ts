@@ -3,6 +3,8 @@ import type { BlockingContext, Confidence, EvidenceItem, PlanDocument, Severity 
 export type DeepEvidenceState = "Observed" | "Supported" | "Contradicted" | "Not Evaluated";
 export type DeepArtifactKind = "Scheduler" | "Locks" | "Memory grants" | "Plan cache" | "Execution plan" | "Diagnostic result";
 export type DeepCollectionStatus = "Pending" | "Partially imported" | "Imported";
+export type DiagnosticProvider = "SQL Evaluate native" | "First Responder Kit" | "sp_WhoIsActive" | "Ola Hallengren" | "Manual workflow";
+export type DiagnosticAvailability = "Available" | "Unavailable" | "Unknown" | "Approval required";
 export type DeepOverlapQuality = "Exact" | "Overlapping" | "Context only" | "Unknown";
 export type DeepDirectness = "Direct" | "Derived" | "Contextual";
 export type DeepProfileId = "cpu-backed-blocking" | "transaction-blocking" | "worker-exhaustion" | "compile-pressure" | "memory-grants" | "plan-specific" | "actual-plan" | "spill-triage";
@@ -85,7 +87,7 @@ export interface DeepCaseArtifact {
 export interface EvidenceImportMessage {
   fileName: string;
   severity: "info" | "warning" | "error";
-  code: "duplicate" | "empty-file" | "unsupported-type" | "read-failed" | "plan-invalid" | "plan-identity-missing";
+  code: "duplicate" | "empty-file" | "unsupported-type" | "read-failed" | "plan-invalid" | "plan-identity-missing" | "plan-identity-conflict" | "capability-invalid" | "capability-stale";
   message: string;
 }
 
@@ -113,6 +115,47 @@ export interface DeepCollectionStep {
   artifactIds: string[];
   executionMode?: "Read-only" | "Administrative";
   requiresApproval?: boolean;
+  recipeId?: string;
+  provider?: DiagnosticProvider;
+  availability?: DiagnosticAvailability;
+  selectionReason?: string;
+  unavailableReason?: string;
+}
+
+export interface InstalledDiagnosticTool {
+  toolId: string;
+  databaseName: string | null;
+  schemaName: string | null;
+  objectName: string;
+  installed: boolean;
+  compatibleSignature: boolean | null;
+  version: string | null;
+  versionDate: string | null;
+  detectedParameters: string[];
+}
+
+export interface ServerCapabilitySnapshot {
+  schemaVersion: "1.0";
+  adapterId: "SQL_EVALUATE_CAPABILITIES_V1";
+  capturedAt: string;
+  sourceArtifactId: string;
+  serverName: string | null;
+  productVersion: string;
+  productLevel: string | null;
+  edition: string | null;
+  engineEdition: number | null;
+  databaseId: number | null;
+  databaseName: string | null;
+  lastQueryPlanStats: "ON" | "OFF" | "UNAVAILABLE" | "UNKNOWN";
+  queryStoreState: string | null;
+  permissions: {
+    viewServerState: boolean | null;
+    viewServerPerformanceState: boolean | null;
+    viewDatabaseState: boolean | null;
+    viewDatabasePerformanceState: boolean | null;
+  };
+  tools: InstalledDiagnosticTool[];
+  warnings: string[];
 }
 
 export interface DeepCaseEvent {
@@ -216,7 +259,7 @@ export type DeepCaseOrigin =
   | { kind: "manual"; label: string };
 
 export interface DeepAnalysisCase {
-  schemaVersion: "1.0" | "1.1" | "1.2" | "1.3";
+  schemaVersion: "1.0" | "1.1" | "1.2" | "1.3" | "1.4";
   id: string;
   profileId: DeepProfileId;
   title: string;
@@ -241,6 +284,7 @@ export interface DeepAnalysisCase {
   };
   assertions: DeepEvidenceAssertion[];
   collectionSteps: DeepCollectionStep[];
+  serverCapabilities?: ServerCapabilitySnapshot;
   artifacts: DeepCaseArtifact[];
   events: DeepCaseEvent[];
   spillTriage?: SpillTriageState;
@@ -248,7 +292,7 @@ export interface DeepAnalysisCase {
 }
 
 export interface DeepCaseArchiveManifest {
-  schemaVersion: "1.0" | "1.1" | "1.2" | "1.3";
+  schemaVersion: "1.0" | "1.1" | "1.2" | "1.3" | "1.4";
   caseId: string;
   appVersion: string;
   exportedAt: string;

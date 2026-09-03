@@ -176,13 +176,38 @@ describe("deep analysis cases", () => {
     expect(reopened.deepCase.artifacts[0].sha256).toMatch(/^[a-f0-9]{64}$/);
   });
 
+  it("rejects malformed capability routing data in an otherwise hash-valid case", async () => {
+    const capability = new File([
+      "adapter_id,schema_version,captured_at,product_version,edition,database_id,database_name,last_query_plan_stats,query_store_state,view_server_state,view_server_performance_state,view_database_state,view_database_performance_state,tool_id,tool_name,installed,compatible_signature\nSQL_EVALUATE_CAPABILITIES_V1,1.0,2026-09-03T12:00:00Z,16.0.4215.2,Standard Edition,7,Clinical,OFF,READ_WRITE,0,1,0,1,frk-blitzcache,sp_BlitzCache,1,1\n",
+    ], "capability.csv", { type: "text/csv" });
+    const imported = await addEvidenceFiles(createSpillTriageCase("2026-09-03T12:00:00Z", "capability-case"), [capability], "2026-09-03T12:01:00Z");
+    const archive = await createDeepCaseArchive(imported.deepCase, [capability], "2026-09-03T12:02:00Z");
+    const validCopy = new Uint8Array(archive.bytes.byteLength); validCopy.set(archive.bytes);
+    const valid = await openDeepCaseArchive(new File([validCopy.buffer], archive.fileName, { type: "application/zip" }));
+    expect(valid.deepCase.serverCapabilities?.queryStoreState).toBe("READ_WRITE");
+    const entries = unzipSync(archive.bytes);
+    const manifest = JSON.parse(strFromU8(entries["manifest.json"])) as { casePath: string; caseSha256: string };
+    const caseJson = JSON.parse(strFromU8(entries[manifest.casePath])) as { serverCapabilities: { permissions: { viewDatabasePerformanceState: unknown } } };
+    caseJson.serverCapabilities.permissions.viewDatabasePerformanceState = "yes";
+    const caseBytes = strToU8(JSON.stringify(caseJson));
+    entries[manifest.casePath] = caseBytes;
+    const caseCopy = new Uint8Array(caseBytes.byteLength); caseCopy.set(caseBytes);
+    const digest = await crypto.subtle.digest("SHA-256", caseCopy.buffer);
+    manifest.caseSha256 = [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, "0")).join("");
+    entries["manifest.json"] = strToU8(JSON.stringify(manifest));
+    const forged = zipSync(entries);
+    const forgedCopy = new Uint8Array(forged.byteLength); forgedCopy.set(forged);
+
+    await expect(openDeepCaseArchive(new File([forgedCopy.buffer], archive.fileName, { type: "application/zip" }))).rejects.toThrow("capability snapshot");
+  });
+
   it("migrates a schema 1.0 working case when it is reopened", async () => {
     const current = createCpuBlockingCase(report, blockingFinding, "2026-08-27T15:05:00Z", "case-old");
     const oldCase = { ...current, schemaVersion: "1.0" as const, incidentWindow: undefined, rootIdentity: undefined, observations: undefined, captureAttempts: undefined, narrative: undefined };
     const archive = await createDeepCaseArchive(oldCase, [], "2026-08-27T15:11:00Z");
     const copy = new Uint8Array(archive.bytes.byteLength); copy.set(archive.bytes);
     const reopened = await openDeepCaseArchive(new File([copy.buffer], archive.fileName, { type: "application/zip" }));
-    expect(reopened.deepCase.schemaVersion).toBe("1.3");
+    expect(reopened.deepCase.schemaVersion).toBe("1.4");
     expect(reopened.deepCase.rootIdentity?.sessionId).toBe(104);
     expect(reopened.deepCase.assertions.some((item) => item.id === "serialization")).toBe(true);
   });

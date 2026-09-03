@@ -1,0 +1,2 @@
+Total Spills,Average Spills,Execution Count,Last Executed,Database Name,Object Name,Query Hash,Query Plan Hash,Database ID,Warnings
+65536,8192,8,2026-09-03 11:55:00,Clinical,dbo.QueryStoreSpill,0x0102030405060708,0x1111111111111111,7,Sort spill

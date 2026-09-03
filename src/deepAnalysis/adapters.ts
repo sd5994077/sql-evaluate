@@ -46,7 +46,7 @@ function firstIndex(headers: string[], aliases: string[]): number {
   return -1;
 }
 
-function identityFromRow(headers: string[], row: unknown[]): DeepQueryIdentity {
+export function identityFromRow(headers: string[], row: unknown[]): DeepQueryIdentity {
   const value = (aliases: string[]) => {
     const index = firstIndex(headers, aliases);
     return index < 0 ? null : row[index];

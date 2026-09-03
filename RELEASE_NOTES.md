@@ -1,4 +1,17 @@
-# SQL Evaluate 1.3.2
+# SQL Evaluate 1.4.0
+
+Release date: 2026-09-03
+
+## Version-aware diagnostics and plan provenance
+
+- Added a manual, importable capability snapshot for SQL Server version, edition, database, effective visibility permissions, existing plan-history features, and installed diagnostic signatures.
+- Added a curated diagnostic catalog spanning supported First Responder Kit procedures, `sp_WhoIsActive`, read-only Ola Hallengren history, and minimal native DMV fallbacks.
+- Added a capability-aware Spill Triage evidence ladder: exact cached-plan provenance, already-enabled last-known actual plans, existing Query Store, controlled actual capture, and approved Extended Events.
+- Added plan-with-provenance CSV/XLSX import. Stable identity from the same result row can enrich one unambiguous Showplan statement; conflicts are preserved and never overwritten.
+- Added a bounded Query Store retrieval process that exports one row per retained plan with database-scoped IDs, Query Store hashes, the persisted compile plan, and weighted runtime aggregates; it explicitly notes that newly enabled Query Store has no earlier history.
+- Added Deep Analysis schema 1.4 migration, accessible availability/safety status, and tests for SQL Server 2022 Standard, disabled features, stale snapshots, missing permissions, and conflicting identities.
+
+## SQL Evaluate 1.3.2
 
 Release date: 2026-09-02
 

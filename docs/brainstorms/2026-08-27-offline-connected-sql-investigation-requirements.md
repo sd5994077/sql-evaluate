@@ -116,6 +116,16 @@ A representative investigation starts with a blocking chain whose root session i
 - R48. A portable working-case archive must reopen without a database, preserve evidence provenance, and support adding later result files to the same case.
 - R49. Working-case export must warn that SQL text, plans, identifiers, and parameters may be sensitive; the separate shareable report must retain default redaction.
 - R50. Case archives must include a stable case ID, schema version, application and knowledge-pack versions, source-file hashes, collection-step status, and a manifest of included evidence.
+- R51. SQL Evaluate must import a read-only server capability snapshot containing SQL Server version, edition, engine type, affected database, relevant permissions, existing plan-history feature states, and detected community diagnostic objects.
+- R52. Collection routing must use observed capabilities rather than assume that an edition label proves a feature is enabled, populated, or permitted.
+- R53. The diagnostic catalog must identify each recipe's owner, purpose, inputs, compatibility, permissions, expected evidence, overhead, safety, official source, and native fallback when applicable.
+- R54. Supported, already-installed read-only community diagnostics may be preferred when they exactly answer the evidence gap, but they must remain optional and version- or signature-checked.
+- R55. Ola Hallengren `CommandLog` and job history may be inspected as evidence, but SQL Evaluate must not recommend running backup, integrity-check, statistics, or index-maintenance procedures merely to diagnose an incident.
+- R56. First Responder Kit installation, updates, AI options, cache-removal output, session termination, restore operations, and other state-changing utilities must remain outside automatic diagnostic routing.
+- R57. A plan result row containing Showplan XML and stable sidecar identity must be imported as one provenance unit; the sidecar may enrich only one unambiguous statement and must never overwrite conflicting XML identity.
+- R58. Spill plan acquisition must use the selected candidate's exact `plan_handle` for cached and last-known-actual lookup, record NULL or expired results, and continue through existing Query Store, controlled actual-plan capture, and approved Extended Events in increasing-risk order.
+- R59. Capability snapshots, routed recipes, and provenance-enriched plans must survive working-case save and reopen while schemas 1.0-1.3 continue to migrate safely.
+- R60. Missing, stale, malformed, incompatible, or permission-limited capability evidence must produce explicit information, warning, error, or Not Evaluated states rather than silent fallback or guessed availability.
 
 ---
 
@@ -179,6 +189,10 @@ A representative investigation starts with a blocking chain whose root session i
 - AE10. **Covers R44-R47.** Given a missing cached plan and an imported live capture containing the matching request, plan handle, and plan XML, when the case is re-evaluated, then plan-dependent hypotheses update with the new evidence and the failed after-the-fact cache lookup remains visible in provenance.
 - AE11. **Covers R46-R47.** Given Query Store is enabled but no actual plan was captured, when historical evidence is imported, then SQL Evaluate uses persisted plan history and aggregated runtime or waits without describing the Query Store plan as an actual execution plan.
 - AE12. **Covers R48-R50.** Given a case with sensitive SQL and plans, when the DBA saves a working case and a shareable report, then the working archive reopens with its evidence and warning while the shareable report remains redacted.
+- AE13. **Covers R51-R56.** Given SQL Server 2022 Standard with `LAST_QUERY_PLAN_STATS` enabled, Query Store available, and a compatible `sp_BlitzCache`, when its capability snapshot is imported, then SQL Evaluate recommends exact read-only plan collection without enabling a feature, running maintenance, or assuming Enterprise Edition.
+- AE14. **Covers R57-R58.** Given a cached-plan result row whose Showplan omits stable identity but whose sidecar contains matching plan handle, hashes, offsets, and database ID, when it is imported, then the identity is attached to exactly one statement and the selected spill candidate correlates without SQL-text matching.
+- AE15. **Covers R57 and R60.** Given sidecar identity that conflicts with identity embedded in Showplan, when it is imported, then SQL Evaluate preserves the plan and conflict warning but does not overwrite or automatically correlate the identity.
+- AE16. **Covers R59-R60.** Given a stale or permission-limited capability snapshot in a saved case, when the case is reopened, then the limitations remain visible and unavailable collection paths are not presented as supported.
 
 ---
 
@@ -241,3 +255,4 @@ A representative investigation starts with a blocking chain whose root session i
 - [Microsoft: Extended Event query post execution Showplan](https://learn.microsoft.com/en-us/shows/sql-workshops/extended-event-query-post-execution-showplan-in-sql-server)
 - [Adam Machanic: sp_WhoIsActive](https://github.com/amachanic/sp_whoisactive)
 - [Brent Ozar Unlimited: First Responder Kit](https://github.com/BrentOzarULTD/SQL-Server-First-Responder-Kit)
+- [Ola Hallengren: SQL Server Maintenance Solution](https://github.com/olahallengren/sql-server-maintenance-solution)

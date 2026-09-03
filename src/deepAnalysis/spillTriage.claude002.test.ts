@@ -61,7 +61,7 @@ describe("CLAUDE-SPILL-002 fixture integrity", () => {
     const archive = await createDeepCaseArchive(manualCase, evidence, "2026-09-02T15:02:30Z");
     const archiveBytes = new Uint8Array(archive.bytes.byteLength); archiveBytes.set(archive.bytes);
     const reopened = await openDeepCaseArchive(new File([archiveBytes.buffer], archive.fileName, { type: "application/zip" }));
-    expect(reopened.deepCase.schemaVersion).toBe("1.3");
+    expect(reopened.deepCase.schemaVersion).toBe("1.4");
     expect(reopened.deepCase.spillTriage?.manualPlanSelections).toHaveLength(1);
     expect(reopened.deepCase.assertions.find((item) => item.id === "plan-captured")?.state).toBe("Supported");
     manualCase = clearSpillPlanStatement(manualCase, echo.id, "2026-09-02T15:03:00Z");

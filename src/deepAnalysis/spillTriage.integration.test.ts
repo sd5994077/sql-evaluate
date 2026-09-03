@@ -65,7 +65,7 @@ describe("Spill Triage integration", () => {
     const archive = await createDeepCaseArchive(evaluated.deepCase, [evidence], "2026-09-02T15:02:00Z");
     const bytes = new Uint8Array(archive.bytes.byteLength); bytes.set(archive.bytes);
     const reopened = await openDeepCaseArchive(new File([bytes.buffer], archive.fileName, { type: "application/zip" }));
-    expect(reopened.deepCase.schemaVersion).toBe("1.3");
+    expect(reopened.deepCase.schemaVersion).toBe("1.4");
     expect(reopened.deepCase.origin).toMatchObject({ kind: "manual" });
     expect(reopened.deepCase.spillTriage?.candidates[0]).toMatchObject({ rank: 1, totalSpillPages: { value: 158870 } });
   });

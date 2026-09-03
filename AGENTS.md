@@ -17,3 +17,10 @@
 - Small internal coding changes with no user-visible behavior, such as tests, comments, documentation-only edits, or refactoring, may keep the current version unless they are being released independently.
 - Keep canonical version sources, package metadata and lockfiles, changelog or release notes, archive names, and checksums consistent with the chosen version.
 - Preserve older numbered release artifacts unless the user explicitly asks to remove them.
+
+## SQL Server diagnostic guidance
+
+- Consult `docs/diagnostic-tool-catalog.md` before adding or recommending diagnostic SQL.
+- Prefer a supported, already-installed community diagnostic recipe when it precisely supplies the required evidence; otherwise use the smallest native read-only query that closes the evidence gap.
+- Never treat installation, maintenance, cache eviction, session termination, restore operations, or external AI options as routine diagnostic collection.
+- Keep every command manual, version- and permission-aware, bounded for production use, and explicit about its expected evidence and safety classification.

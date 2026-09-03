@@ -41,6 +41,14 @@ describe("SpillTriagePanel", () => {
     expect(screen.getByText(/runtime operator counts and spill volumes are not available/i)).toBeTruthy();
   });
 
+  it("labels Query Store evidence as a persisted compile plan rather than an actual plan", () => {
+    const value = state(true);
+    value.plans[0].plan.sourceKind = "Query Store";
+    render(<SpillTriagePanel spillTriage={value} onSelect={vi.fn()} onChoosePlan={vi.fn()} {...callbacks} />);
+    expect(screen.getByText("Query Store persisted compile plan")).toBeTruthy();
+    expect(screen.getByText(/not an actual per-execution plan/i)).toBeTruthy();
+  });
+
   it("presents plan-correlation outcomes with explicit accessible severity", () => {
     const missing = render(<SpillTriagePanel spillTriage={state()} onSelect={vi.fn()} onChoosePlan={vi.fn()} {...callbacks} />);
     const information = screen.getByRole("status", { name: /information: plan needed/i });

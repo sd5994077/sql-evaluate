@@ -172,7 +172,8 @@ WHERE r.session_id = @TargetSessionId;`;
 
 export function queryStoreExportCommand(caseId = "UNASSIGNED"): string {
   return `/* SQL Evaluate escalation: existing Query Store history. Read-only.
-   Run in the affected database. This script does not enable or change Query Store. */
+   Run in the affected database. This script does not enable or change Query Store.
+   Query Store contains only data captured after it was enabled. */
 SET NOCOUNT ON;
 DECLARE @SqlEvaluateCase varchar(80) = '${safeCaseTag(caseId)}';
 DECLARE @QueryHash binary(8) = NULL; -- Replace with the confirmed query_hash.
@@ -182,22 +183,38 @@ SELECT actual_state_desc, desired_state_desc, readonly_reason,
        current_storage_size_mb, max_storage_size_mb
 FROM sys.database_query_store_options;
 
+;WITH RuntimeWindow AS
+(
+    SELECT rs.plan_id,
+           MIN(rsi.start_time) AS runtime_interval_start,
+           MAX(rsi.end_time) AS runtime_interval_end,
+           SUM(CONVERT(bigint, rs.count_executions)) AS count_executions,
+           SUM(CONVERT(decimal(38,4), rs.avg_duration) * rs.count_executions) / NULLIF(SUM(CONVERT(decimal(38,4), rs.count_executions)), 0) AS avg_duration,
+           SUM(CONVERT(decimal(38,4), rs.avg_cpu_time) * rs.count_executions) / NULLIF(SUM(CONVERT(decimal(38,4), rs.count_executions)), 0) AS avg_cpu_time,
+           SUM(CONVERT(decimal(38,4), rs.avg_logical_io_reads) * rs.count_executions) / NULLIF(SUM(CONVERT(decimal(38,4), rs.count_executions)), 0) AS avg_logical_io_reads,
+           SUM(CONVERT(decimal(38,4), rs.avg_query_max_used_memory) * rs.count_executions) / NULLIF(SUM(CONVERT(decimal(38,4), rs.count_executions)), 0) AS avg_query_max_used_memory
+    FROM sys.query_store_runtime_stats AS rs
+    JOIN sys.query_store_runtime_stats_interval AS rsi ON rsi.runtime_stats_interval_id = rs.runtime_stats_interval_id
+    WHERE rsi.end_time >= @Since
+    GROUP BY rs.plan_id
+)
 SELECT 'QUERY_STORE_EXPORT_V1' AS adapter_id, @SqlEvaluateCase AS case_id,
        'QUERY_STORE' AS evidence_set, SYSUTCDATETIME() AS captured_at,
-       q.query_id, p.plan_id, q.query_hash, qt.query_sql_text,
-       p.query_plan, p.is_forced_plan, p.force_failure_count,
-       rsi.start_time AS runtime_interval_start, rsi.end_time AS runtime_interval_end,
-       rs.count_executions, rs.avg_duration, rs.avg_cpu_time,
-       rs.avg_logical_io_reads, rs.avg_query_max_used_memory
+       DB_ID() AS database_id, q.query_id, p.plan_id, q.query_hash, p.query_plan_hash,
+       px.plan_xml.value('declare default element namespace "http://schemas.microsoft.com/sqlserver/2004/07/showplan"; (//StmtSimple/@StatementStartOffset)[1]', 'int') AS statement_start_offset,
+       px.plan_xml.value('declare default element namespace "http://schemas.microsoft.com/sqlserver/2004/07/showplan"; (//StmtSimple/@StatementEndOffset)[1]', 'int') AS statement_end_offset,
+       qt.query_sql_text, p.query_plan, p.is_forced_plan, p.force_failure_count,
+       rw.runtime_interval_start, rw.runtime_interval_end,
+       rw.count_executions, rw.avg_duration, rw.avg_cpu_time,
+       rw.avg_logical_io_reads, rw.avg_query_max_used_memory
 FROM sys.query_store_query AS q
 JOIN sys.query_store_query_text AS qt ON qt.query_text_id = q.query_text_id
 JOIN sys.query_store_plan AS p ON p.query_id = q.query_id
-LEFT JOIN sys.query_store_runtime_stats AS rs ON rs.plan_id = p.plan_id
-LEFT JOIN sys.query_store_runtime_stats_interval AS rsi ON rsi.runtime_stats_interval_id = rs.runtime_stats_interval_id
+OUTER APPLY (SELECT TRY_CONVERT(xml, p.query_plan) AS plan_xml) AS px
+LEFT JOIN RuntimeWindow AS rw ON rw.plan_id = p.plan_id
 WHERE @QueryHash IS NOT NULL
   AND q.query_hash = @QueryHash
-  AND (rsi.start_time IS NULL OR rsi.end_time >= @Since)
-ORDER BY rsi.start_time, p.plan_id;`;
+ORDER BY p.plan_id;`;
 }
 
 export function extendedEventsShowplanCommand(caseId = "UNASSIGNED"): string {

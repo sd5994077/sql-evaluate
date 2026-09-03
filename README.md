@@ -20,6 +20,7 @@ The committed `dist` bundle needs Node.js 20 or newer but does not need `npm ins
 - Embedded `query_plan` XML within a capture
 - Previously exported `.sqleval.json` reports
 - Previously saved `.sqlevalcase.zip` Deep Analysis cases
+- SQL Evaluate server-capability snapshots saved from the generated read-only preflight
 
 Capture files are limited to 100 MB and plan files to 25 MB. Unknown future columns are preserved. Missing optional fields disable only the rules that require them.
 
@@ -43,6 +44,12 @@ Stable SQL Server identities—session/request/transaction IDs, SQL and plan han
 
 The plan-capture escalation ladder is visible in the case: live request plus plan, already-enabled last-known actual plan, existing Query Store history, and only then a narrowly filtered post-execution Showplan Extended Events recipe. The last option is administrative and potentially expensive; it is clearly separated from the read-only recipes and requires independent approval.
 
+Import the generated **Server capability snapshot** before using version-dependent collection paths. It records SQL Server version and edition, the affected database, effective visibility permissions, `LAST_QUERY_PLAN_STATS`, Query Store state, and compatible diagnostic objects in a selected DBA utility database. Routing uses these observed capabilities rather than edition assumptions. SQL Evaluate does not enable features, install tools, or connect to the server.
+
+When Query Store is already active, select a spill candidate and use **Review existing Query Store history**. Run the generated bounded query in the affected database, save its single grid as CSV/XLSX, and import it. The export contains one row per retained plan with stable identity and aggregated runtime history. Query Store plans are persisted compile plans—not actual per-execution plans—and a newly enabled Query Store has no earlier history. See [the diagnostic catalog](docs/diagnostic-tool-catalog.md#query-store-retrieval-process).
+
+The bundled diagnostic catalog covers supported First Responder Kit procedures, `sp_WhoIsActive`, native DMV fallbacks, and read-only inspection of existing Ola Hallengren history. It does not recommend cache eviction, session termination, restores, maintenance execution, installation/update scripts, or external AI options. See [Diagnostic tool catalog](docs/diagnostic-tool-catalog.md).
+
 Use **Save Case ZIP** to preserve the case, imported evidence, file hashes, event history, identity correlation, plan-capture attempts, and current evidence states without a database. A `.sqlevalcase.zip` is a sensitive working archive and is not redacted; store it only in an access-controlled internal location. Deep Analysis can also export redacted JSON, assertion CSV, and printable HTML for handoff. Those handoffs are built from a separate allowlist, omit raw evidence and stable identifiers, and cannot be reopened as working cases.
 
 ### Spill Triage
@@ -50,6 +57,8 @@ Use **Save Case ZIP** to preserve the case, imported evidence, file hashes, even
 Start Spill Triage from the landing page, Deep Analysis, or a runtime spill finding. Import a CSV/XLSX `sp_BlitzCache` result produced with `@SortOrder = 'Spills'`; SQL Evaluate ranks only rows with valid positive spill metrics. The default order is total 8 KB spill pages, average spill pages per execution, last execution, then source row. A separate callout keeps the highest per-execution spiller visible when it differs from the highest cumulative spiller.
 
 The imported row count may be a bounded `@Top` result. Ten rows do not prove that only ten plans spilled. Different plan handles remain separate even when their query hash is the same. Upload a cached or actual Showplan to continue: correlation requires stable SQL Server identity, Query Store IDs require matching database context for an exact match, and similar SQL text never establishes a match. If multiple statements have the same strongest non-conflicting identity, SQL Evaluate blocks automatic correlation and offers a reversible manual choice. Cached/estimated plans provide compile-time shape only; runtime spill pages, grants, operator counts, and upstream estimate errors are shown only from actual-plan evidence.
+
+When a `.sqlplan` omits stable identity, use the **Cached plan with stable provenance** ladder step. Its CSV/XLSX result keeps `query_plan`, plan and SQL handles, paired hashes, statement offsets, and database ID in the same row. SQL Evaluate can attach that sidecar identity to one unambiguous Showplan statement; conflicting identity is preserved as a warning and never overwritten.
 
 `Remove Plan Handle From Cache` values are retained only behind an administrative-source warning. They are not recommended remediation, have no one-click action, and are never executed by SQL Evaluate.
 

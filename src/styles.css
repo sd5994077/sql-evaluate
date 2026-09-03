@@ -421,7 +421,7 @@ footer { color: #708995; font-size: 12px; }
 .recipe-grid ul { margin: 12px 0 0; padding-left: 18px; color: #9eb2ba; font-size: 12px; line-height: 1.6; }
 .recipe-grid small { color: #667f89; font-size: 10px; }
 .deep-command { display: grid; grid-template-columns: 1fr 110px; max-height: 520px; border: 1px solid #285564; background: #040c11; }
-.deep-command code { min-width: 0; overflow: auto; padding: 20px; color: #b8ebf4; font: 12px/1.6 Consolas, "Cascadia Code", monospace; white-space: pre; }
+.deep-command code { min-width: 0; max-height: 520px; overflow: auto; padding: 20px; color: #b8ebf4; font: 12px/1.6 Consolas, "Cascadia Code", monospace; white-space: pre; }
 .deep-command > div { display: flex; flex-direction: column; border-left: 1px solid #285564; }
 .deep-command button { flex: 1; min-height: 54px; border: 0; border-bottom: 1px solid #285564; background: #0d2a36; color: #74dcef; cursor: pointer; font: 650 10px Bahnschrift, sans-serif; letter-spacing: .08em; text-transform: uppercase; }
 .deep-command button:last-child { border-bottom: 0; }
@@ -545,6 +545,39 @@ footer { color: #708995; font-size: 12px; }
 .spill-launch strong { display: block; margin-top: 5px; color: #edf8fa; font-size: 20px; }
 .spill-launch p { margin: 5px 0 0; color: #9db5bd; font-size: 12px; }
 .spill-triage { display: grid; gap: 18px; padding: 22px; border: 1px solid #264d5b; border-top: 0; background: #0a1b22; }
+.capability-board { position: relative; margin-top: 18px; overflow: hidden; border: 1px solid #315b68; background: linear-gradient(120deg, #0b2029, #08151c 68%); }
+.capability-board::before { position: absolute; inset: 0 auto 0 0; width: 4px; content: ""; background: #ba9238; }
+.capability-observed::before { background: #43c6d8; }
+.capability-heading { display: flex; align-items: end; justify-content: space-between; gap: 28px; padding: 21px 24px 18px; border-bottom: 1px solid #294a55; }
+.capability-heading span { color: #6bd1e2; font: 650 11px Bahnschrift, sans-serif; letter-spacing: .12em; }
+.capability-heading h3 { margin: 6px 0; color: #e3f0f2; font: 650 20px Bahnschrift, sans-serif; text-transform: uppercase; }
+.capability-heading p { margin: 0; color: #9eb4bc; font-size: 12px; line-height: 1.5; }
+.capability-facts { display: grid; grid-template-columns: repeat(4, 1fr); margin: 0; border-bottom: 1px solid #294a55; }
+.capability-facts div { padding: 14px 18px; border-right: 1px solid #294a55; }
+.capability-facts div:last-child { border-right: 0; }
+.capability-facts dt { color: #71909a; font: 650 11px Bahnschrift, sans-serif; letter-spacing: .06em; text-transform: uppercase; }
+.capability-facts dd { margin: 6px 0 0; color: #d6e6e9; font: 650 13px Bahnschrift, sans-serif; }
+.capability-facts dd.available { color: #78dec6; }.capability-facts dd.caution { color: #edc96b; }
+.capability-tools { display: flex; flex-wrap: wrap; gap: 8px; padding: 15px 18px; }
+.capability-tools > span { min-width: 180px; padding: 8px 10px; border: 1px solid #315866; background: #07161d; }
+.capability-tools b, .capability-tools small { display: block; }.capability-tools b { color: #cfe4e8; font-size: 12px; }.capability-tools small { margin-top: 3px; color: #7897a1; font-size: 11px; }
+.capability-tools .tool-incompatible { border-color: #76564d; }.capability-tools .tool-incompatible small { color: #e1a89b; }
+.capability-tools p { margin: 0; color: #9bb0b7; font-size: 12px; }
+.capability-warning { display: flex; gap: 12px; padding: 10px 18px; border-top: 1px solid #6c5729; background: #2a230f; color: #ddc98c; font-size: 12px; }
+.capability-warning b { color: #f2cb62; text-transform: uppercase; }
+.capability-pending { display: flex; align-items: center; gap: 14px; padding: 18px 24px; color: #b7a878; }
+.capability-pending > span { display: grid; width: 28px; height: 28px; place-items: center; border: 1px solid #9d7f39; border-radius: 50%; color: #f0c963; font: 700 15px Consolas, monospace; }
+.capability-pending p { margin: 0; font-size: 12px; line-height: 1.55; }
+.diagnostic-ladder { margin-top: 18px; }
+.diagnostic-ladder .capture-ladder { grid-template-columns: repeat(3, 1fr); }
+.capture-ladder button.unavailable { background: #10171b; opacity: .72; }
+.capture-ladder button.unavailable > strong { color: #84949a; }
+.recipe-why { padding: 10px 12px; border-left: 3px solid #43bfd2; background: #0e2933; color: #abc4ca !important; }
+.recipe-why b { color: #75d7e6; }
+.recipe-availability { margin: 12px 0; padding: 11px 13px; border: 1px solid #81662e; background: #29220e; color: #d9c381; }
+.recipe-availability b { color: #f0ca63; text-transform: uppercase; }.recipe-availability p { margin: 5px 0 0; }
+.recipe-unavailable { border-color: #83494b; background: #2d1618; color: #e0b0b0; }.recipe-unavailable b { color: #ffb4b4; }
+.deep-command button:disabled { cursor: not-allowed; opacity: .45; }
 .spill-stage-head h3 { margin: 5px 0; color: #e7f3f5; font-size: 21px; }
 .spill-stage-head p { margin: 0; max-width: 900px; color: #9cb2ba; font-size: 12px; line-height: 1.55; }
 .spill-disclosure { padding: 10px 13px; border-left: 3px solid #d3a83f; background: #33280c88; color: #d5c58e; font-size: 12px; }
@@ -615,6 +648,9 @@ footer { color: #708995; font-size: 12px; }
 .spill-quality ul { margin-bottom: 0; line-height: 1.55; }
 
 @media (max-width: 900px) {
+  .capability-facts { grid-template-columns: 1fr 1fr; }
+  .capability-facts div:nth-child(2) { border-right: 0; }
+  .diagnostic-ladder .capture-ladder { grid-template-columns: 1fr 1fr; }
   .spill-summary, .spill-context { grid-template-columns: 1fr; }
   .spill-alternatives article { align-items: stretch; flex-direction: column; }
   .spill-summary article, .spill-context div { border-right: 0; border-bottom: 1px solid #284e5b; }
@@ -622,6 +658,10 @@ footer { color: #708995; font-size: 12px; }
   .spill-operators dl { grid-template-columns: 1fr 1fr; }
 }
 @media (max-width: 600px) {
+  .capability-heading { align-items: stretch; flex-direction: column; }
+  .capability-facts { grid-template-columns: 1fr; }
+  .capability-facts div { border-right: 0; border-bottom: 1px solid #294a55; }
+  .diagnostic-ladder .capture-ladder { grid-template-columns: 1fr; }
   .spill-launch { align-items: stretch; flex-direction: column; }
   .spill-triage { padding: 12px; }
   .spill-operators dl { grid-template-columns: 1fr; }

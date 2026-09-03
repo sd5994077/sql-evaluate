@@ -1,10 +1,12 @@
 import { useRef, useState } from "react";
 import type { Finding } from "../types";
-import type { DeepAnalysisCase, DeepEvidenceState, EvidenceImportMessage } from "../deepAnalysis/types";
+import type { DeepAnalysisCase, DeepCollectionStep, DeepEvidenceState, EvidenceImportMessage } from "../deepAnalysis/types";
 import { isPlanImportMessage } from "../deepAnalysis/importMessages";
 import { DEEP_ANALYSIS_PROFILE_CATALOG } from "../deepAnalysis/profile";
 import { deepAnalysisProfileForFinding, profileLabel } from "../deepAnalysis/profile";
 import { deepCaseFindingsCsv, deepCaseJson, deepCasePrintableHtml } from "../deepAnalysis/report";
+import { recommendedSpillStepId } from "../deepAnalysis/toolCatalog";
+import { resolveCandidatePlan } from "../deepAnalysis/spillTriage";
 import { downloadBlob } from "../lib/report";
 import { formatNumber } from "../lib/utils";
 import { SeverityBadge } from "./SeverityBadge";
@@ -54,6 +56,55 @@ function DeepShareActions({ deepCase }: { deepCase: DeepAnalysisCase }) {
   return <div className="deep-share-actions"><span>REDACTED HANDOFF</span><button onClick={() => downloadBlob(`SQL-Evaluate_${deepCase.id}_redacted.json`, deepCaseJson(deepCase), "application/json")}>JSON</button><button onClick={() => downloadBlob(`SQL-Evaluate_${deepCase.id}_assertions.csv`, deepCaseFindingsCsv(deepCase), "text/csv;charset=utf-8")}>CSV</button><button onClick={() => downloadBlob(`SQL-Evaluate_${deepCase.id}_report.html`, deepCasePrintableHtml(deepCase), "text/html;charset=utf-8")}>Print HTML</button><small>These allowlisted reports are not reopenable. The working case ZIP remains raw and sensitive.</small></div>;
 }
 
+function CollectionRecipe({ steps, recommendedId, caseId }: { steps: DeepCollectionStep[]; recommendedId?: string; caseId: string }) {
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const selected = steps.find((item) => item.id === selectedId) ?? steps.find((item) => item.id === recommendedId) ?? steps[0];
+  if (!selected) return null;
+  const tabPrefix = `diagnostic-${caseId.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+  const unavailable = selected.availability === "Unavailable";
+  const copyCommand = async () => {
+    if (unavailable) return;
+    try { await navigator.clipboard.writeText(selected.command); setCopied(true); }
+    catch { setCopied(copyFallback(selected.command)); }
+    window.setTimeout(() => setCopied(false), 1800);
+  };
+  const moveTabFocus = (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const tabs = [...(event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]') ?? [])];
+    const nextIndex = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : event.key === "ArrowRight" ? (index + 1) % tabs.length : (index - 1 + tabs.length) % tabs.length;
+    tabs[nextIndex]?.focus();
+    tabs[nextIndex]?.click();
+  };
+  return <section className="deep-recipe diagnostic-ladder" aria-labelledby="diagnostic-ladder-title">
+    <div className="deep-section-title"><div><span>EVIDENCE ACQUISITION LADDER</span><h3 id="diagnostic-ladder-title">{selected.title}</h3></div><span className={`overhead overhead-${selected.overhead.toLowerCase()}`}>{selected.overhead} overhead</span></div>
+    <div className="capture-ladder" role="tablist" aria-label="Evidence acquisition paths">{steps.map((item, index) => <button id={`${tabPrefix}-tab-${item.id}`} aria-controls={`${tabPrefix}-panel`} role="tab" aria-selected={item.id === selected.id} tabIndex={item.id === selected.id ? 0 : -1} className={`${item.id === selected.id ? "active" : ""} ${item.availability === "Unavailable" ? "unavailable" : ""}`} key={item.id} onClick={() => setSelectedId(item.id)} onKeyDown={(event) => moveTabFocus(event, index)}><span>{String(index + 1).padStart(2, "0")}</span><strong>{item.title}</strong><small>{item.provider ?? "SQL Evaluate native"} · {item.availability ?? "Unknown"}</small>{item.id === recommendedId && <b>RECOMMENDED</b>}</button>)}</div>
+    <div id={`${tabPrefix}-panel`} role="tabpanel" aria-labelledby={`${tabPrefix}-tab-${selected.id}`}>
+    <p>{selected.purpose}</p>
+    {selected.selectionReason && <p className="recipe-why"><b>Why this route:</b> {selected.selectionReason}</p>}
+    {selected.unavailableReason && <div className={`recipe-availability ${unavailable ? "recipe-unavailable" : "recipe-unknown"}`} role="status"><b>{unavailable ? "Unavailable" : "Capability not confirmed"}</b><p>{selected.unavailableReason}</p></div>}
+    <div className="recipe-grid"><div><span>Expected evidence</span><ul>{selected.expectedEvidence.map((item) => <li key={item}>{item}</li>)}</ul></div><div><span>Permissions and compatibility</span><ul>{selected.requiredPermissions.map((item) => <li key={item}>{item}</li>)}</ul><small>{selected.supportedVersions}</small></div></div>
+    <div className="deep-command"><code>{selected.command}</code><div><button disabled={unavailable} onClick={copyCommand}>{copied ? "Copied" : "Copy SQL"}</button><button disabled={unavailable} onClick={() => downloadBlob(`SQL-Evaluate_${caseId}_${selected.id}.sql`, selected.command, "text/plain;charset=utf-8")}>Download .sql</button></div></div>
+    <div className={`recipe-caution ${selected.executionMode === "Administrative" ? "recipe-administrative" : ""}`}><b>{selected.executionMode === "Administrative" ? "Separate approval required" : "Caution"}</b><p>{selected.caution}</p><span>SQL EVALUATE NEVER EXECUTES THIS SCRIPT.</span></div>
+    </div>
+  </section>;
+}
+
+function ServerCapabilityPanel({ deepCase, onImport }: { deepCase: DeepAnalysisCase; onImport(): void }) {
+  const snapshot = deepCase.serverCapabilities;
+  const installed = snapshot?.tools.filter((tool) => tool.installed) ?? [];
+  const usable = installed.filter((tool) => tool.compatibleSignature !== false);
+  return <section className={`capability-board ${snapshot ? "capability-observed" : "capability-unknown"}`} aria-labelledby="capability-title">
+    <div className="capability-heading"><div><span>SERVER CAPABILITY SNAPSHOT</span><h3 id="capability-title">{snapshot ? `${snapshot.edition ?? "SQL Server"} · ${snapshot.productVersion}` : "Route by evidence, not assumptions"}</h3><p>{snapshot ? `Captured ${new Date(snapshot.capturedAt).toLocaleString()} in ${snapshot.databaseName ?? "an unknown database"}.` : "Import the result of the read-only preflight before choosing version-, permission-, or feature-dependent collection steps."}</p></div><button type="button" className="button" onClick={onImport}>{snapshot ? "Import refreshed snapshot" : "Import snapshot result"}</button></div>
+    {snapshot ? <>
+      <dl className="capability-facts"><div><dt>Edition</dt><dd>{snapshot.edition ?? "Not visible"}</dd></div><div><dt>LAST_QUERY_PLAN_STATS</dt><dd className={snapshot.lastQueryPlanStats === "ON" ? "available" : "caution"}>{snapshot.lastQueryPlanStats}</dd></div><div><dt>Query Store</dt><dd className={snapshot.queryStoreState && !["OFF", "ERROR", "UNAVAILABLE", "PERMISSION_REQUIRED", "UNKNOWN"].includes(snapshot.queryStoreState.toUpperCase()) ? "available" : "caution"}>{snapshot.queryStoreState ?? "Unknown"}</dd></div><div><dt>Diagnostic tools</dt><dd>{usable.length} compatible / {installed.length} installed</dd></div></dl>
+      <div className="capability-tools">{installed.map((tool) => <span className={tool.compatibleSignature === false ? "tool-incompatible" : ""} key={tool.toolId}><b>{tool.objectName}</b><small>{tool.databaseName ?? "unknown database"} · {tool.version ?? (tool.compatibleSignature === false ? "incompatible signature" : "version unknown")}</small></span>)}{!installed.length && <p>No supported community diagnostic objects were detected in the selected utility database. Native read-only routes remain available.</p>}</div>
+      {snapshot.warnings.map((warning) => <div className="capability-warning" role="status" key={warning}><b>Warning</b>{warning}</div>)}
+    </> : <div className="capability-pending"><span aria-hidden="true">?</span><p>SQL Evaluate will not infer capabilities from the edition label alone. The first ladder step provides the snapshot script.</p></div>}
+  </section>;
+}
+
 export function DeepAnalysisWorkspace({ deepCase, recommendations, busy, onStart, onStartSpillTriage, onSelectSpillCandidate, onChooseSpillPlan, onClearSpillPlan, onImport, onSave, onOpen, estimateThresholds, importMessages = [] }: Props) {
   const evidenceInput = useRef<HTMLInputElement>(null);
   const caseInput = useRef<HTMLInputElement>(null);
@@ -83,7 +134,13 @@ export function DeepAnalysisWorkspace({ deepCase, recommendations, busy, onStart
     </div>
   </section>;
 
-  if (deepCase.profileId === "spill-triage") return <section className="deep-workspace">
+  if (deepCase.profileId === "spill-triage") {
+    const triage = deepCase.spillTriage ?? { candidates: [], selectedCandidateId: null, imports: [], plans: [], manualPlanSelections: [] };
+    const candidate = triage.candidates.find((item) => item.id === triage.selectedCandidateId) ?? triage.candidates[0];
+    const manual = candidate ? triage.manualPlanSelections.find((item) => item.candidateId === candidate.id) : undefined;
+    const resolution = candidate ? resolveCandidatePlan(candidate, triage.plans, manual) : null;
+    const recommendedId = recommendedSpillStepId(deepCase.collectionSteps, Boolean(resolution?.connected), Boolean(resolution?.connected && resolution.statement?.isActual), Boolean(deepCase.serverCapabilities), Boolean(candidate), triage.plans.some((item) => item.plan.sourceKind === "Query Store"));
+    return <section className="deep-workspace">
     <header className="deep-case-head">
       <div><span className="deep-kicker">CASE / {deepCase.id}</span><h2>{deepCase.title}</h2><p>Rank imported spill evidence, then connect the selected cached variant to a plan through stable SQL Server identity.</p></div>
       <div className="deep-case-actions"><span className="sensitive-chip">SENSITIVE WORKING CASE</span><button className="button" disabled={busy} onClick={() => caseInput.current?.click()}>Open case</button><button className="button" disabled={busy} onClick={() => evidenceInput.current?.click()}>Import evidence</button><button className="button button-save" disabled={busy} onClick={onSave}>{busy ? "Preparing…" : "Save case ZIP"}</button></div>
@@ -91,9 +148,12 @@ export function DeepAnalysisWorkspace({ deepCase, recommendations, busy, onStart
       <input ref={evidenceInput} data-testid="spill-triage-evidence-input" hidden multiple type="file" accept=".csv,.tsv,.xlsx,.xls,.sqlplan,.xml" onChange={(event) => { onImport([...event.target.files ?? []]); event.target.value = ""; }} />
     </header>
     {generalImportMessages.length > 0 && <div className="upload-message-panel" role={generalImportSeverity === "error" ? "alert" : "status"} aria-live={generalImportSeverity === "error" ? "assertive" : "polite"} aria-label={`${generalImportLabel}: Evidence import results`}><strong>Evidence import results</strong>{generalImportMessages.map((message, index) => <p className={`upload-message-${message.severity}`} key={`${message.fileName}-${message.code}-${index}`}><b>{message.fileName}</b>: {message.message}</p>)}</div>}
-    <SpillTriagePanel spillTriage={deepCase.spillTriage ?? { candidates: [], selectedCandidateId: null, imports: [], plans: [], manualPlanSelections: [] }} onSelect={onSelectSpillCandidate} onChoosePlan={() => evidenceInput.current?.click()} onChooseStatement={onChooseSpillPlan} onClearStatement={onClearSpillPlan} estimateThresholds={estimateThresholds} planImportMessages={planImportMessages} />
+    <ServerCapabilityPanel deepCase={deepCase} onImport={() => evidenceInput.current?.click()} />
+    <SpillTriagePanel spillTriage={triage} onSelect={onSelectSpillCandidate} onChoosePlan={() => evidenceInput.current?.click()} onChooseStatement={onChooseSpillPlan} onClearStatement={onClearSpillPlan} estimateThresholds={estimateThresholds} planImportMessages={planImportMessages} />
+    <CollectionRecipe steps={deepCase.collectionSteps} recommendedId={recommendedId} caseId={deepCase.id} />
     <DeepShareActions deepCase={deepCase} />
   </section>;
+  }
 
   const planAssertion = deepCase.assertions.find((item) => item.id === "plan-captured");
   const lastAttempt = deepCase.captureAttempts?.at(-1);

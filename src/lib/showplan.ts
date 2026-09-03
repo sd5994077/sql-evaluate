@@ -241,11 +241,18 @@ function inferSourceKind(fileName: string, actual: boolean, sourceId: string): P
 }
 
 export function parseShowplan(xml: string, sourceId: string, fileName: string): PlanDocument {
+  if (!xml.trim()) throw new Error("The execution plan file is empty.");
+  if (xml.includes("\u0000")) throw new Error("The execution plan encoding could not be decoded. Resave it as UTF-8, UTF-8 with BOM, or UTF-16 with BOM.");
+  if (/&lt;\s*(?:\w+:)?ShowPlanXML\b/i.test(xml)) throw new Error("This file contains escaped Showplan XML (`&lt;ShowPlanXML`) instead of raw XML. Export or save the original Showplan XML before importing.");
   if (/<!DOCTYPE/i.test(xml)) throw new Error("DOCTYPE declarations are not allowed in plan files.");
   const parserErrors: string[] = [];
   const document = new DOMParser({ onError: (level, message) => { if (level === "error" || level === "fatalError") parserErrors.push(message); } }).parseFromString(xml, "application/xml");
   const roots = elements(document, "ShowPlanXML");
-  if (!roots.length || parserErrors.length) throw new Error(`This file is not valid SQL Server Showplan XML${parserErrors[0] ? `: ${parserErrors[0]}` : "."}`);
+  if (parserErrors.length) {
+    const location = parserErrors[0].match(/\[line:(\d+),col:(\d+)\]/i);
+    throw new Error(`This file contains malformed SQL Server Showplan XML${location ? ` near line ${location[1]}, column ${location[2]}` : ""}.`);
+  }
+  if (!roots.length) throw new Error("This file is XML, but its root is not SQL Server ShowPlanXML.");
   const planWarnings: string[] = [];
   const statements = ["StmtSimple", "StmtCond", "StmtCursor", "StmtUseDb", "StmtReceive"]
     .flatMap((name) => elements(document, name))

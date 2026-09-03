@@ -82,6 +82,13 @@ export interface DeepCaseArtifact {
   warnings?: string[];
 }
 
+export interface EvidenceImportMessage {
+  fileName: string;
+  severity: "info" | "warning" | "error";
+  code: "duplicate" | "empty-file" | "unsupported-type" | "read-failed" | "plan-invalid" | "plan-identity-missing";
+  message: string;
+}
+
 export interface DeepCaptureAttempt {
   id: string;
   occurredAt: string;

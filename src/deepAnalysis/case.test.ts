@@ -207,9 +207,52 @@ describe("deep analysis cases", () => {
     expect(result.acceptedFiles.map((file) => file.name)).toEqual(["first.csv"]);
     expect(result.deepCase.artifacts).toHaveLength(1);
     expect(result.deepCase.spillTriage?.candidates).toHaveLength(1);
+    expect(result.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ fileName: "second.csv", severity: "info", code: "duplicate" }),
+    ]));
     const repeated = await addEvidenceFiles(result.deepCase, [second], "2026-09-02T15:02:00Z");
     expect(repeated.acceptedFiles).toEqual([]);
     expect(repeated.deepCase.artifacts).toHaveLength(1);
+    expect(repeated.messages[0]).toMatchObject({ fileName: "second.csv", severity: "info", code: "duplicate" });
+  });
+
+  it("reports when a parsed Showplan has no correlation-ready stable identity", async () => {
+    const plan = new File([
+      `<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan"><BatchSequence><Batch><Statements><StmtSimple StatementText="SELECT 1"><QueryPlan><RelOp NodeId="0" PhysicalOp="Constant Scan" LogicalOp="Constant Scan" /></QueryPlan></StmtSimple></Statements></Batch></BatchSequence></ShowPlanXML>`,
+    ], "identity-free.sqlplan", { type: "application/xml" });
+
+    const result = await addEvidenceFiles(createSpillTriageCase("2026-09-02T15:00:00Z", "identity-free"), [plan], "2026-09-02T15:01:00Z");
+
+    expect(result.deepCase.spillTriage?.plans).toHaveLength(1);
+    expect(result.messages[0]).toMatchObject({ fileName: "identity-free.sqlplan", severity: "warning", code: "plan-identity-missing" });
+    expect(result.messages[0].message).toMatch(/imported successfully.*cannot be connected automatically/i);
+  });
+
+  it("reports escaped Showplan XML without echoing file contents", async () => {
+    const plan = new File(["&lt;ShowPlanXML&gt;private text&lt;/ShowPlanXML&gt;"], "escaped.sqlplan", { type: "application/xml" });
+
+    const result = await addEvidenceFiles(createSpillTriageCase("2026-09-02T15:00:00Z", "escaped"), [plan], "2026-09-02T15:01:00Z");
+
+    expect(result.deepCase.spillTriage?.plans).toHaveLength(0);
+    expect(result.deepCase.artifacts).toHaveLength(1);
+    expect(result.messages[0]).toMatchObject({ fileName: "escaped.sqlplan", severity: "error", code: "plan-invalid" });
+    expect(result.messages[0].message).toMatch(/escaped Showplan XML/i);
+    expect(result.messages[0].message).not.toContain("private text");
+  });
+
+  it("isolates unsupported and empty evidence while importing valid files", async () => {
+    const valid = new File(["Total Spills,Plan Handle\n100,0xVALID\n"], "valid.csv", { type: "text/csv" });
+    const unsupported = new File(["private"], "notes.docx");
+    const empty = new File([], "empty.sqlplan", { type: "application/xml" });
+
+    const result = await addEvidenceFiles(createSpillTriageCase("2026-09-02T15:00:00Z", "isolated"), [valid, unsupported, empty], "2026-09-02T15:01:00Z");
+
+    expect(result.acceptedFiles.map((file) => file.name)).toEqual(["valid.csv"]);
+    expect(result.deepCase.spillTriage?.candidates).toHaveLength(1);
+    expect(result.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ fileName: "notes.docx", severity: "error", code: "unsupported-type" }),
+      expect.objectContaining({ fileName: "empty.sqlplan", severity: "error", code: "empty-file" }),
+    ]));
   });
 
   it("extracts an embedded Showplan from a detected header below workbook preamble rows", async () => {

@@ -56,6 +56,12 @@ describe("Showplan parser", () => {
     expect(() => parseShowplan("<!DOCTYPE x><ShowPlanXML />", "source", "x.xml")).toThrow(/DOCTYPE/);
   });
 
+  it("explains common privacy-safe Showplan import failures", () => {
+    expect(() => parseShowplan("", "source", "empty.sqlplan")).toThrow(/empty/i);
+    expect(() => parseShowplan("&lt;ShowPlanXML&gt;", "source", "escaped.sqlplan")).toThrow(/escaped Showplan XML/i);
+    expect(() => parseShowplan("\u0000<\u0000S\u0000h\u0000o\u0000w\u0000P\u0000l\u0000a\u0000n", "source", "encoding.sqlplan")).toThrow(/encoding/i);
+  });
+
   it("keeps runtime evidence, warnings, and object names scoped to their operator", () => {
     const plan = parseShowplan(nestedPlan, "source", "nested.sqlplan");
     const [parent, child, scan] = plan.statements[0].operators;

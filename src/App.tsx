@@ -7,7 +7,7 @@ import { FindingDrawer } from "./components/FindingDrawer";
 import { InvestigationGuide } from "./components/InvestigationGuide";
 import { SeverityBadge } from "./components/SeverityBadge";
 import { ThresholdProfileManager } from "./components/ThresholdProfileManager";
-import type { DeepAnalysisCase } from "./deepAnalysis/types";
+import type { DeepAnalysisCase, EvidenceImportMessage } from "./deepAnalysis/types";
 import { addEvidenceFiles, chooseSpillPlanStatement, clearSpillPlanStatement, createDeepAnalysisCase, createDeepCaseArchive, createSpillTriageCase, openDeepCaseArchive, selectSpillCandidate } from "./deepAnalysis/case";
 import { deepAnalysisProfileForFinding } from "./deepAnalysis/profile";
 import { downloadBlob, findingsCsv, printableReport, redactReport, validateReport } from "./lib/report";
@@ -64,6 +64,7 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState("");
   const [errors, setErrors] = useState<string[]>([]);
+  const [uploadMessages, setUploadMessages] = useState<EvidenceImportMessage[]>([]);
   const [tab, setTab] = useState<Tab>("findings");
   const [selected, setSelected] = useState<Finding | null>(null);
   const [severity, setSeverity] = useState<Severity | "All">("All");
@@ -158,6 +159,7 @@ function App() {
       setDeepFiles(opened.files);
       setSelected(null);
       setErrors([]);
+      setUploadMessages([]);
       setTab("deep");
     } catch (error) {
       setErrors([`Deep Analysis case could not be opened: ${error instanceof Error ? error.message : "Unknown case error"}`]);
@@ -168,6 +170,7 @@ function App() {
 
   const analyzeFiles = async (files: File[]) => {
     if (!files.length) return;
+    setUploadMessages([]);
     const caseFile = files.find((file) => file.name.toLowerCase().endsWith(".sqlevalcase.zip"));
     if (caseFile) {
       if (files.length !== 1) { setErrors(["Open a saved .sqlevalcase.zip by itself; other selected files were not analyzed."]); return; }
@@ -297,6 +300,7 @@ function App() {
       setDeepCase(createDeepAnalysisCase(report, finding));
       setDeepFiles([]);
       setErrors([]);
+      setUploadMessages([]);
       setSelected(null);
       setTab("deep");
     } catch (error) {
@@ -308,6 +312,7 @@ function App() {
     setDeepCase(createSpillTriageCase());
     setDeepFiles([]);
     setErrors([]);
+    setUploadMessages([]);
     setSelected(null);
     setTab("deep");
   };
@@ -324,7 +329,9 @@ function App() {
       setDeepCase(result.deepCase);
       setDeepFiles((current) => [...current, ...result.acceptedFiles]);
       setErrors([]);
+      setUploadMessages(result.messages);
     } catch (error) {
+      setUploadMessages([]);
       setErrors([`Deep Analysis evidence could not be imported: ${error instanceof Error ? error.message : "Unknown evidence error"}`]);
     } finally {
       setDeepBusy(false);
@@ -355,6 +362,7 @@ function App() {
       <ThresholdProfileManager entries={profileEntries} active={activeProfile} reportProfile={report?.thresholdProfile} ready={profileReady} warnings={profileWarnings} onActivate={activateProfile} onStore={storeProfile} onDelete={removeProfile} />
       {loading && <div className="processing"><span className="loader" /><div><strong>Analyzing locally</strong><p>{progress}</p></div></div>}
       {errors.length > 0 && <div className="error-panel"><strong>Some input could not be processed</strong>{errors.map((error) => <p key={error}>{error}</p>)}</div>}
+      {uploadMessages.length > 0 && <div className="upload-message-panel" role="status" aria-live="polite"><strong>Evidence import results</strong>{uploadMessages.map((item, index) => <p className={`upload-message-${item.severity}`} key={`${item.fileName}-${item.code}-${index}`}><b>{item.fileName}</b>: {item.message}</p>)}</div>}
       {report && <>
         <section className="report-meta"><div><span>ANALYSIS / {new Date(report.createdAt).toLocaleDateString()}</span><strong>{report.inputs.map((input) => input.fileName).join(" + ")}</strong><small className="report-profile">{report.thresholdProfile ? `Profile ${report.thresholdProfile.id}@${report.thresholdProfile.version} · ${report.thresholdProfile.digest.slice(0, 12)}` : "Legacy report · threshold profile not recorded"}</small></div><div className="report-actions"><label className="raw-toggle"><input type="checkbox" checked={rawExport} onChange={(event) => { if (event.target.checked && !confirm("Raw exports and run archives may contain the original capture, SQL text, host names, logins, database names, and parameter values. Include them?")) return; setRawExport(event.target.checked); }} />Include raw details</label><button className="button button-save" disabled={savingRun} onClick={saveRun}>{savingRun ? "Preparing ZIP…" : "Save Run ZIP"}</button><button className="button" onClick={() => exportReport("json")}>JSON</button><button className="button" onClick={() => exportReport("csv")}>CSV</button><button className="button" onClick={() => exportReport("html")}>Print HTML</button></div></section>
         <section className="kpi-grid">

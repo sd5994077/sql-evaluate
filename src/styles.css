@@ -73,11 +73,12 @@ main { width: min(1520px, calc(100% - clamp(28px, 8vw, 120px))); margin: 0 auto;
 .profile-preview { padding: 14px 20px; border-top: 1px solid #2b6575; background: #0d2935; display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 9px; }.profile-preview small { max-width: 760px; }
 .profile-message, .profile-status { margin: 0; padding: 10px 20px; border-top: 1px solid var(--line); color: #9eb3bd; font-size: 11px; }.profile-status-warning, .profile-message { color: #e5c786; background: #33290e33; }
 .profile-disclosure { margin: 0; padding: 10px 20px; border-top: 1px solid var(--line); color: #c7b875; background: #2d260f55; font-size: 11px; }
-.processing, .error-panel { margin-top: 14px; padding: 18px 22px; display: flex; align-items: center; gap: 16px; border: 1px solid var(--line); background: #0a1821; }
+.processing, .error-panel, .upload-message-panel { margin-top: 14px; padding: 18px 22px; display: flex; align-items: center; gap: 16px; border: 1px solid var(--line); background: #0a1821; }
 .processing strong, .processing p { display: block; margin: 0; }.processing p { color: var(--muted); margin-top: 4px; }
 .loader { width: 23px; height: 23px; border: 2px solid #234956; border-top-color: var(--cyan); border-radius: 50%; animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .error-panel { display: block; border-color: #773e3e; color: #ffc2c2; }.error-panel p { margin: 7px 0 0; }
+.upload-message-panel { display: block; border-color: #31596a; color: #dce9ef; }.upload-message-panel p { margin: 8px 0 0; }.upload-message-panel .upload-message-info { color: #9fcad8; }.upload-message-panel .upload-message-warning { color: #f0d48b; }.upload-message-panel .upload-message-error { color: #ffc2c2; }
 .report-meta { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin: 42px 0 18px; }
 .report-meta > div { min-width: 0; max-width: 100%; }
 .report-meta strong { display: block; max-width: 680px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 6px; }

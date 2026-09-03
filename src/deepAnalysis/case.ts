@@ -6,7 +6,7 @@ import { inspectEvidenceMatrix, normalizeEvidenceHeader } from "./adapters";
 import { evaluateDeepCase } from "./evaluator";
 import { cpuBlockingCollectionCommand, CPU_BACKED_BLOCKING_PROFILE, deepAnalysisProfileForFinding, extendedEventsShowplanCommand, lastKnownActualPlanCommand, profileLabel, queryStoreExportCommand } from "./profile";
 import { inspectSpillTriageMatrix, rankSpillCandidates, resolveCandidatePlan } from "./spillTriage";
-import type { DeepAnalysisCase, DeepCaseArchive, DeepCaseArchiveManifest, DeepCaseArtifact, DeepEvidenceAssertion, DeepEvidenceObservation, DeepProfileId, DeepQueryIdentity, SpillCandidate, SpillImportSummary, SpillManualPlanSelection, SpillPlanEvidence, SpillTriageState } from "./types";
+import type { DeepAnalysisCase, DeepCaseArchive, DeepCaseArchiveManifest, DeepCaseArtifact, DeepEvidenceAssertion, DeepEvidenceObservation, DeepProfileId, DeepQueryIdentity, EvidenceImportMessage, SpillCandidate, SpillImportSummary, SpillManualPlanSelection, SpillPlanEvidence, SpillTriageState } from "./types";
 
 const CASE_SIZE_LIMIT = 100 * 1024 * 1024;
 const UNCOMPRESSED_LIMIT = 200 * 1024 * 1024;
@@ -395,6 +395,32 @@ interface InspectedEvidence {
   spillCandidates: SpillCandidate[];
   spillImports: SpillImportSummary[];
   spillPlans: SpillPlanEvidence[];
+  messages: EvidenceImportMessage[];
+}
+
+function hasCorrelationReadyIdentity(identity: DeepQueryIdentity | undefined): boolean {
+  if (!identity) return false;
+  return Boolean(
+    identity.planHandle
+    || identity.sqlHandle
+    || (identity.queryHash && identity.queryPlanHash)
+    || (identity.queryStoreQueryId != null && identity.queryStorePlanId != null && identity.databaseId != null),
+  );
+}
+
+function supportedEvidenceFile(fileName: string, profileId: DeepProfileId): boolean {
+  const lower = fileName.toLowerCase();
+  const extensions = profileId === "spill-triage"
+    ? [".csv", ".tsv", ".xlsx", ".xls", ".sqlplan", ".xml"]
+    : [".csv", ".tsv", ".xlsx", ".xls", ".sqlplan", ".xml", ".json", ".txt"];
+  return extensions.some((extension) => lower.endsWith(extension));
+}
+
+function readFailureMessage(file: File): string {
+  const lower = file.name.toLowerCase();
+  if (lower.endsWith(".xlsx") || lower.endsWith(".xls")) return "The workbook could not be read. Confirm it is not password-protected or corrupted, then save a fresh copy and retry.";
+  if (lower.endsWith(".sqlplan") || lower.endsWith(".xml")) return "The execution plan could not be read. Confirm it is raw SQL Server Showplan XML and retry.";
+  return "The evidence file could not be read. Confirm the file is accessible and not corrupted, then retry.";
 }
 
 async function inspectEvidenceFile(file: File, rootSessionId: number | null, importedAt: string): Promise<InspectedEvidence> {
@@ -417,6 +443,7 @@ async function inspectEvidenceFile(file: File, rootSessionId: number | null, imp
   const spillCandidates: SpillCandidate[] = [];
   const spillImports: SpillImportSummary[] = [];
   const spillPlans: SpillPlanEvidence[] = [];
+  const messages: EvidenceImportMessage[] = [];
 
   const mergeMatrix = (matrix: unknown[][], prefix?: string) => {
     const result = inspectEvidenceMatrix(matrix, rootSessionId, artifactId);
@@ -471,9 +498,16 @@ async function inspectEvidenceFile(file: File, rootSessionId: number | null, imp
       if (wastedGrants.length) { signals.add("unused-memory-grant"); signals.add("plan-memory-overgrant"); details.push("The plan contains a workspace-memory grant at least four times maximum used memory."); }
       if (plan.statements.some((statement) => statement.operators.some((operator) => operator.hasScalarFunction))) signals.add("filter-udf");
       if (plan.statements.some((statement) => statement.operators.some((operator) => Boolean(operator.residualPredicate || operator.nonSargablePredicate)))) signals.add("non-sargable");
+      if (!plan.statements.some((statement) => hasCorrelationReadyIdentity(statement.queryIdentity))) {
+        const message = "Showplan imported successfully, but it contains no correlation-ready stable identity (plan_handle; sql_handle; query_hash plus query_plan_hash; or Query Store IDs plus database ID). It can be reviewed as plan evidence but cannot be connected automatically to a spill candidate.";
+        warnings.push(message);
+        messages.push({ fileName: file.name, severity: "warning", code: "plan-identity-missing", message });
+      }
     } catch (error) {
-      details.push(`XML was attached but not recognized as Showplan: ${error instanceof Error ? error.message : "parse error"}`);
-      warnings.push("The XML attachment was preserved but cannot drive plan assertions.");
+      const reason = error instanceof Error ? error.message : "The file could not be parsed as SQL Server Showplan XML.";
+      details.push(`XML was attached but not recognized as Showplan: ${reason}`);
+      warnings.push("The XML attachment was preserved for provenance but cannot drive plan assertions.");
+      messages.push({ fileName: file.name, severity: "error", code: "plan-invalid", message: `${reason} The file was preserved for provenance but was not added as usable plan evidence.` });
     }
   } else if (lower.endsWith(".xlsx") || lower.endsWith(".xls")) {
     const XLSX = await import("xlsx");
@@ -538,7 +572,7 @@ async function inspectEvidenceFile(file: File, rootSessionId: number | null, imp
     resultSetTypes: [...resultSetTypes].sort(),
     identity,
     warnings,
-  }, observations, spillCandidates, spillImports, spillPlans };
+  }, observations, spillCandidates, spillImports, spillPlans, messages };
 }
 
 function validManualPlanSelections(spillTriage: SpillTriageState): SpillManualPlanSelection[] {
@@ -550,17 +584,47 @@ function validManualPlanSelections(spillTriage: SpillTriageState): SpillManualPl
   });
 }
 
-export async function addEvidenceFiles(deepCase: DeepAnalysisCase, files: File[], importedAt = new Date().toISOString()): Promise<{ deepCase: DeepAnalysisCase; acceptedFiles: File[] }> {
+export async function addEvidenceFiles(deepCase: DeepAnalysisCase, files: File[], importedAt = new Date().toISOString()): Promise<{ deepCase: DeepAnalysisCase; acceptedFiles: File[]; messages: EvidenceImportMessage[] }> {
   const existing = new Set(deepCase.artifacts.map((artifact) => artifact.sha256));
   const uniqueFiles: File[] = [];
+  const messages: EvidenceImportMessage[] = [];
   for (const file of files) {
-    if (file.size > CASE_SIZE_LIMIT) throw new Error(`${file.name}: evidence files are limited to 100 MB.`);
-    const hash = await sha256File(file);
-    if (existing.has(hash)) continue;
-    existing.add(hash);
-    uniqueFiles.push(file);
+    if (!supportedEvidenceFile(file.name, deepCase.profileId)) {
+      messages.push({ fileName: file.name, severity: "error", code: "unsupported-type", message: deepCase.profileId === "spill-triage" ? "This file type is not supported here. Use CSV, TSV, XLSX, XLS, SQLPLAN, or XML evidence." : "This file type is not supported here. Use CSV, TSV, XLSX, XLS, SQLPLAN, XML, JSON, or TXT evidence." });
+      continue;
+    }
+    if (file.size === 0) {
+      messages.push({ fileName: file.name, severity: "error", code: "empty-file", message: "The file is empty and was not imported." });
+      continue;
+    }
+    if (file.size > CASE_SIZE_LIMIT) {
+      messages.push({ fileName: file.name, severity: "error", code: "read-failed", message: "The file exceeds the 100 MB evidence limit and was not imported." });
+      continue;
+    }
+    try {
+      const hash = await sha256File(file);
+      if (existing.has(hash)) {
+        messages.push({ fileName: file.name, severity: "info", code: "duplicate", message: "Identical evidence is already in this case, so this copy was skipped. Renaming does not change duplicate detection." });
+        continue;
+      }
+      existing.add(hash);
+      uniqueFiles.push(file);
+    } catch {
+      messages.push({ fileName: file.name, severity: "error", code: "read-failed", message: readFailureMessage(file) });
+    }
   }
-  const accepted = await Promise.all(uniqueFiles.map((file) => inspectEvidenceFile(file, deepCase.rootSessionId, importedAt)));
+  const inspected = await Promise.allSettled(uniqueFiles.map((file) => inspectEvidenceFile(file, deepCase.rootSessionId, importedAt)));
+  const accepted: InspectedEvidence[] = [];
+  const acceptedFiles: File[] = [];
+  inspected.forEach((result, index) => {
+    if (result.status === "fulfilled") {
+      accepted.push(result.value);
+      acceptedFiles.push(uniqueFiles[index]);
+      messages.push(...result.value.messages);
+    } else {
+      messages.push({ fileName: uniqueFiles[index].name, severity: "error", code: "read-failed", message: readFailureMessage(uniqueFiles[index]) });
+    }
+  });
   const artifacts = accepted.map((item) => item.artifact);
   const observations = accepted.flatMap((item) => item.observations);
   const priorSpill = deepCase.spillTriage ?? { candidates: [], selectedCandidateId: null, imports: [], plans: [], manualPlanSelections: [] };
@@ -583,7 +647,7 @@ export async function addEvidenceFiles(deepCase: DeepAnalysisCase, files: File[]
     spillTriage,
     events: artifacts.length ? [...deepCase.events, { occurredAt: importedAt, type: "Evidence imported", summary: `${artifacts.length} evidence file${artifacts.length === 1 ? "" : "s"} attached and evaluated.` }] : deepCase.events,
   });
-  return { deepCase: updated, acceptedFiles: uniqueFiles };
+  return { deepCase: updated, acceptedFiles, messages };
 }
 
 export function selectSpillCandidate(deepCase: DeepAnalysisCase, candidateId: string): DeepAnalysisCase {

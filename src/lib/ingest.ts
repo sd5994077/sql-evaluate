@@ -95,6 +95,10 @@ export async function parsePlanFile(file: File): Promise<ParsedSource> {
 
 export async function parseInputFile(file: File): Promise<ParsedSource> {
   const lower = file.name.toLowerCase();
+  if (file.size === 0) throw new Error("The selected file is empty.");
   if (lower.endsWith(".sqlplan") || lower.endsWith(".xml")) return parsePlanFile(file);
+  if (![".csv", ".tsv", ".xlsx", ".xls"].some((extension) => lower.endsWith(extension))) {
+    throw new Error("Unsupported file type. Choose CSV, TSV, XLSX, XLS, SQLPLAN, or XML, or open a saved report/case by itself.");
+  }
   return parseCaptureFile(file);
 }

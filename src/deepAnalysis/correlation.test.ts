@@ -1,7 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { incidentOverlap, matchQueryIdentity } from "./correlation";
+import { hasCorrelationReadyIdentity, incidentOverlap, matchQueryIdentity } from "./correlation";
 
 describe("Deep Analysis correlation", () => {
+  it("defines which identity combinations can support automatic correlation", () => {
+    expect(hasCorrelationReadyIdentity(undefined)).toBe(false);
+    expect(hasCorrelationReadyIdentity({ queryHash: "0xQ" })).toBe(false);
+    expect(hasCorrelationReadyIdentity({ queryHash: "0xQ", queryPlanHash: "0xP" })).toBe(true);
+    expect(hasCorrelationReadyIdentity({ sqlHandle: "0xS" })).toBe(true);
+    expect(hasCorrelationReadyIdentity({ queryStoreQueryId: 7, queryStorePlanId: 9 })).toBe(false);
+    expect(hasCorrelationReadyIdentity({ queryStoreQueryId: 7, queryStorePlanId: 9, databaseId: 5 })).toBe(true);
+  });
+
   it("prefers exact handles and never treats query hash alone as an exact plan match", () => {
     expect(matchQueryIdentity({ planHandle: "0xABCD" }, { planHandle: "abcd" })).toMatchObject({ matched: true, quality: "Exact" });
     expect(matchQueryIdentity({ queryHash: "0x1111", databaseId: 5 }, { queryHash: "1111", databaseId: 5 })).toMatchObject({ matched: true, quality: "Candidate" });

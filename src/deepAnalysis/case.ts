@@ -3,6 +3,7 @@ import type { AnalysisReport, Finding } from "../types";
 import { APP_VERSION } from "../version";
 import { decodeText, parseCsv } from "../lib/csv";
 import { inspectEvidenceMatrix, normalizeEvidenceHeader } from "./adapters";
+import { hasCorrelationReadyIdentity } from "./correlation";
 import { evaluateDeepCase } from "./evaluator";
 import { cpuBlockingCollectionCommand, CPU_BACKED_BLOCKING_PROFILE, deepAnalysisProfileForFinding, extendedEventsShowplanCommand, lastKnownActualPlanCommand, profileLabel, queryStoreExportCommand } from "./profile";
 import { inspectSpillTriageMatrix, rankSpillCandidates, resolveCandidatePlan } from "./spillTriage";
@@ -396,16 +397,6 @@ interface InspectedEvidence {
   spillImports: SpillImportSummary[];
   spillPlans: SpillPlanEvidence[];
   messages: EvidenceImportMessage[];
-}
-
-function hasCorrelationReadyIdentity(identity: DeepQueryIdentity | undefined): boolean {
-  if (!identity) return false;
-  return Boolean(
-    identity.planHandle
-    || identity.sqlHandle
-    || (identity.queryHash && identity.queryPlanHash)
-    || (identity.queryStoreQueryId != null && identity.queryStorePlanId != null && identity.databaseId != null),
-  );
 }
 
 function supportedEvidenceFile(fileName: string, profileId: DeepProfileId): boolean {

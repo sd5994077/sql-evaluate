@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import type { Finding } from "../types";
-import type { DeepAnalysisCase, DeepEvidenceState } from "../deepAnalysis/types";
+import type { DeepAnalysisCase, DeepEvidenceState, EvidenceImportMessage } from "../deepAnalysis/types";
+import { isPlanImportMessage } from "../deepAnalysis/importMessages";
 import { DEEP_ANALYSIS_PROFILE_CATALOG } from "../deepAnalysis/profile";
 import { deepAnalysisProfileForFinding, profileLabel } from "../deepAnalysis/profile";
 import { deepCaseFindingsCsv, deepCaseJson, deepCasePrintableHtml } from "../deepAnalysis/report";
@@ -22,6 +23,7 @@ interface Props {
   onSave(): void;
   onOpen(file: File): void;
   estimateThresholds: { ratio: number; rows: number };
+  importMessages?: EvidenceImportMessage[];
 }
 
 const stateOrder: DeepEvidenceState[] = ["Observed", "Supported", "Contradicted", "Not Evaluated"];
@@ -52,11 +54,17 @@ function DeepShareActions({ deepCase }: { deepCase: DeepAnalysisCase }) {
   return <div className="deep-share-actions"><span>REDACTED HANDOFF</span><button onClick={() => downloadBlob(`SQL-Evaluate_${deepCase.id}_redacted.json`, deepCaseJson(deepCase), "application/json")}>JSON</button><button onClick={() => downloadBlob(`SQL-Evaluate_${deepCase.id}_assertions.csv`, deepCaseFindingsCsv(deepCase), "text/csv;charset=utf-8")}>CSV</button><button onClick={() => downloadBlob(`SQL-Evaluate_${deepCase.id}_report.html`, deepCasePrintableHtml(deepCase), "text/html;charset=utf-8")}>Print HTML</button><small>These allowlisted reports are not reopenable. The working case ZIP remains raw and sensitive.</small></div>;
 }
 
-export function DeepAnalysisWorkspace({ deepCase, recommendations, busy, onStart, onStartSpillTriage, onSelectSpillCandidate, onChooseSpillPlan, onClearSpillPlan, onImport, onSave, onOpen, estimateThresholds }: Props) {
+export function DeepAnalysisWorkspace({ deepCase, recommendations, busy, onStart, onStartSpillTriage, onSelectSpillCandidate, onChooseSpillPlan, onClearSpillPlan, onImport, onSave, onOpen, estimateThresholds, importMessages = [] }: Props) {
   const evidenceInput = useRef<HTMLInputElement>(null);
   const caseInput = useRef<HTMLInputElement>(null);
   const [copied, setCopied] = useState(false);
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
+  const planImportMessages = importMessages.filter(isPlanImportMessage);
+  const generalImportMessages = importMessages.filter((message) => !isPlanImportMessage(message));
+  const generalImportSeverity = generalImportMessages.some((message) => message.severity === "error")
+    ? "error"
+    : generalImportMessages.some((message) => message.severity === "warning") ? "warning" : "info";
+  const generalImportLabel = generalImportSeverity === "error" ? "Error" : generalImportSeverity === "warning" ? "Warning" : "Information";
 
   if (!deepCase) return <section className="deep-empty">
     <div className="deep-empty-intro">
@@ -82,7 +90,8 @@ export function DeepAnalysisWorkspace({ deepCase, recommendations, busy, onStart
       <input ref={caseInput} hidden type="file" accept=".sqlevalcase.zip,.zip" onChange={(event) => { const file = event.target.files?.[0]; if (file) onOpen(file); event.target.value = ""; }} />
       <input ref={evidenceInput} data-testid="spill-triage-evidence-input" hidden multiple type="file" accept=".csv,.tsv,.xlsx,.xls,.sqlplan,.xml" onChange={(event) => { onImport([...event.target.files ?? []]); event.target.value = ""; }} />
     </header>
-    <SpillTriagePanel spillTriage={deepCase.spillTriage ?? { candidates: [], selectedCandidateId: null, imports: [], plans: [], manualPlanSelections: [] }} onSelect={onSelectSpillCandidate} onChoosePlan={() => evidenceInput.current?.click()} onChooseStatement={onChooseSpillPlan} onClearStatement={onClearSpillPlan} estimateThresholds={estimateThresholds} />
+    {generalImportMessages.length > 0 && <div className="upload-message-panel" role={generalImportSeverity === "error" ? "alert" : "status"} aria-live={generalImportSeverity === "error" ? "assertive" : "polite"} aria-label={`${generalImportLabel}: Evidence import results`}><strong>Evidence import results</strong>{generalImportMessages.map((message, index) => <p className={`upload-message-${message.severity}`} key={`${message.fileName}-${message.code}-${index}`}><b>{message.fileName}</b>: {message.message}</p>)}</div>}
+    <SpillTriagePanel spillTriage={deepCase.spillTriage ?? { candidates: [], selectedCandidateId: null, imports: [], plans: [], manualPlanSelections: [] }} onSelect={onSelectSpillCandidate} onChoosePlan={() => evidenceInput.current?.click()} onChooseStatement={onChooseSpillPlan} onClearStatement={onClearSpillPlan} estimateThresholds={estimateThresholds} planImportMessages={planImportMessages} />
     <DeepShareActions deepCase={deepCase} />
   </section>;
 

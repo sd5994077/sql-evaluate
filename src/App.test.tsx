@@ -70,7 +70,7 @@ async function storeClone(id: string, name: string): Promise<void> {
   fireEvent.change(screen.getByLabelText("Profile ID"), { target: { value: id } });
   fireEvent.change(screen.getByLabelText("Profile name"), { target: { value: name } });
   fireEvent.click(screen.getByRole("button", { name: "Store clone" }));
-  await waitFor(() => expect(screen.getByText(new RegExp(`Stored ${name}`))).toBeTruthy());
+  await waitFor(() => expect(screen.getByRole("status", { name: /success: profile stored/i })).toBeTruthy());
 }
 
 describe("analysis navigation", () => {
@@ -86,6 +86,32 @@ describe("analysis navigation", () => {
     expect(screen.getByRole("button", { name: "Print HTML" })).toBeTruthy();
     expect(screen.getByText(/not reopenable/i)).toBeTruthy();
   });
+
+  it("shows a rejected Showplan beside the Spill Triage matching-plan action", async () => {
+    const { container } = render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Start Spill Triage" }));
+    const evidenceInput = container.querySelector<HTMLInputElement>('[data-testid="spill-triage-evidence-input"]')!;
+    fireEvent.change(evidenceInput, { target: { files: [new File(["Total Spills,Plan Handle\n100,0xAAA\n"], "blitz-spills.csv", { type: "text/csv" })] } });
+    expect(await screen.findByRole("button", { name: "Choose matching plan" })).toBeTruthy();
+
+    fireEvent.change(evidenceInput, { target: { files: [new File(["not a Showplan"], "blitzcache-plan.sqlplan", { type: "application/xml" })] } });
+
+    const error = await screen.findByRole("alert", { name: /error: plan import failed/i });
+    expect(within(error).getByText(/blitzcache-plan\.sqlplan/i)).toBeTruthy();
+  });
+
+  it("shows non-plan import errors inside the Spill Triage workspace", async () => {
+    const { container } = render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Start Spill Triage" }));
+    const evidenceInput = container.querySelector<HTMLInputElement>('[data-testid="spill-triage-evidence-input"]')!;
+
+    fireEvent.change(evidenceInput, { target: { files: [new File([], "empty-blitzcache.csv", { type: "text/csv" })] } });
+
+    const error = await screen.findByRole("alert", { name: /error: evidence import results/i });
+    expect(within(error).getByText(/empty-blitzcache\.csv/i)).toBeTruthy();
+    expect(within(error).getByText(/file is empty and was not imported/i)).toBeTruthy();
+  });
+
   it("warns that profile names are disclosed in default exports", async () => {
     render(<App />);
     expect(await screen.findByText(/profile names appear in reports and default exports/i)).toBeTruthy();
@@ -184,7 +210,7 @@ describe("analysis navigation", () => {
     await waitFor(() => expect(screen.getByText("IMPORT PREVIEW / NOT ACTIVE")).toBeTruthy());
     expect((screen.getByLabelText("Active profile") as HTMLSelectElement).selectedOptions[0].textContent).toMatch(/published defaults/i);
     fireEvent.click(screen.getByRole("button", { name: "Store profile" }));
-    await waitFor(() => expect(screen.getByText(/Stored Imported DBA profile/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole("status", { name: /success: profile stored/i })).toBeTruthy());
     expect((screen.getByLabelText("Active profile") as HTMLSelectElement).selectedOptions[0].textContent).toMatch(/published defaults/i);
     expect(window.localStorage.getItem("sql-evaluate.threshold-profiles.v1")).not.toMatch(/records|findings|sql_text/i);
   });

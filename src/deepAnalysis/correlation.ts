@@ -22,6 +22,16 @@ function sameHandle(left: string | null | undefined, right: string | null | unde
   return Boolean(a && b && a === b);
 }
 
+export function hasCorrelationReadyIdentity(identity: DeepQueryIdentity | undefined): boolean {
+  if (!identity) return false;
+  return Boolean(
+    identity.planHandle
+    || identity.sqlHandle
+    || (identity.queryHash && identity.queryPlanHash)
+    || (identity.queryStoreQueryId != null && identity.queryStorePlanId != null && identity.databaseId != null),
+  );
+}
+
 export function matchQueryIdentity(left: DeepQueryIdentity | undefined, right: DeepQueryIdentity | undefined): IdentityMatch {
   if (!left || !right) return { matched: false, quality: "None", reason: "One source has no stable query identity.", conflicts: [] };
   const conflicts: string[] = [];

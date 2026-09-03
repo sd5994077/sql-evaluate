@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { DeepQueryIdentity, SpillCandidate, SpillTriageState } from "../deepAnalysis/types";
+import { hasCorrelationReadyIdentity } from "../deepAnalysis/correlation";
+import { isPlanImportMessage } from "../deepAnalysis/importMessages";
+import type { DeepQueryIdentity, EvidenceImportMessage, SpillCandidate, SpillTriageState } from "../deepAnalysis/types";
 import { actualSpillOperators, earliestFeedingEstimateError, highestPerExecution, resolveCandidatePlan, spillVolumeGiB } from "../deepAnalysis/spillTriage";
 
 interface Props {
@@ -9,6 +11,7 @@ interface Props {
   onChooseStatement(candidateId: string, artifactId: string, statementId: string): void;
   onClearStatement(candidateId: string): void;
   estimateThresholds?: { ratio: number; rows: number };
+  planImportMessages?: EvidenceImportMessage[];
 }
 
 const PAGE_SIZE = 50;
@@ -46,11 +49,20 @@ function statementIdentity(identity: DeepQueryIdentity): string {
   return hash ? `${offsets} · ${hash.length > 22 ? `${hash.slice(0, 12)}…${hash.slice(-6)}` : hash}` : offsets;
 }
 
-export function SpillTriagePanel({ spillTriage, onSelect, onChoosePlan, onChooseStatement, onClearStatement, estimateThresholds = { ratio: 10, rows: 10_000 } }: Props) {
+function importStatusTitle(message: EvidenceImportMessage): string {
+  if (message.severity === "error") return "Plan import failed";
+  if (message.code === "plan-identity-missing") return "Plan imported but cannot be correlated";
+  if (message.code === "duplicate") return "Plan was not re-imported";
+  return "Plan import notice";
+}
+
+export function SpillTriagePanel({ spillTriage, onSelect, onChoosePlan, onChooseStatement, onClearStatement, estimateThresholds = { ratio: 10, rows: 10_000 }, planImportMessages = [] }: Props) {
   const [page, setPage] = useState(0);
   const selected = spillTriage.candidates.find((candidate) => candidate.id === spillTriage.selectedCandidateId) ?? spillTriage.candidates[0] ?? null;
   const selectedDetails = useRef<HTMLElement>(null);
   const previousSelection = useRef(selected?.id);
+  const planImportNotice = useRef<HTMLDivElement>(null);
+  const hasRenderedPlanImportNotice = useRef(false);
   useEffect(() => {
     if (previousSelection.current && selected?.id && previousSelection.current !== selected.id) selectedDetails.current?.focus();
     previousSelection.current = selected?.id;
@@ -63,6 +75,25 @@ export function SpillTriagePanel({ spillTriage, onSelect, onChoosePlan, onChoose
   const visible = spillTriage.candidates.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
   const manualSelection = selected ? spillTriage.manualPlanSelections?.find((selection) => selection.candidateId === selected.id) : undefined;
   const resolution = useMemo(() => selected ? resolveCandidatePlan(selected, spillTriage.plans, manualSelection) : null, [selected, spillTriage.plans, manualSelection]);
+  const visiblePlanImportMessages = planImportMessages.filter(isPlanImportMessage);
+  const planImportKey = visiblePlanImportMessages.map((message) => `${message.fileName}:${message.code}:${message.message}`).join("|");
+  const importedPlanHasStableIdentity = spillTriage.plans.some((evidence) => evidence.plan.statements.some((statement) => hasCorrelationReadyIdentity(statement.queryIdentity)));
+  const missingMatchTone = !spillTriage.plans.length ? "info" : resolution?.blockedByConflict ? "error" : "warning";
+  const missingMatchLabel = missingMatchTone === "error" ? "Error" : missingMatchTone === "warning" ? "Warning" : "Information";
+  const missingMatchTitle = !spillTriage.plans.length
+    ? "Plan needed"
+    : resolution?.blockedByConflict
+      ? "Stable identity conflict"
+      : resolution?.ambiguous
+        ? "Matching plan is ambiguous"
+        : !importedPlanHasStableIdentity
+          ? "Imported plan cannot be correlated"
+          : "No stably correlated plan";
+  const missingMatchReason = !spillTriage.plans.length
+    ? "No plan has been supplied. Import the cached or actual Showplan for this candidate."
+    : !importedPlanHasStableIdentity
+      ? "The imported Showplan is valid, but it does not contain a correlation-ready stable identifier. Saving a plan from a results grid does not guarantee that the plan handle or query hashes are embedded in the Showplan XML."
+      : `${resolution?.reason ?? "No supported stable identifier matches."} A cached handle may have expired, or the supplied plan may belong to another cached variant. Similar SQL text is never used as a match.`;
   const actualSpills = resolution?.connected && resolution.evidence && resolution.statement ? actualSpillOperators(resolution.evidence.plan, resolution.statement) : [];
   useEffect(() => setPage((value) => Math.min(value, pagesCount - 1)), [pagesCount]);
   useEffect(() => {
@@ -70,6 +101,10 @@ export function SpillTriagePanel({ spillTriage, onSelect, onChoosePlan, onChoose
     const index = spillTriage.candidates.findIndex((candidate) => candidate.id === selected.id);
     if (index >= 0) setPage(Math.floor(index / PAGE_SIZE));
   }, [selected?.id, spillTriage.candidates]);
+  useEffect(() => {
+    if (hasRenderedPlanImportNotice.current && planImportKey) planImportNotice.current?.focus();
+    hasRenderedPlanImportNotice.current = true;
+  }, [planImportKey]);
 
   return <div className="spill-triage">
     <div className="spill-stage-head"><span>STAGE 1 / CANDIDATE SELECTION</span><h3>Choose the cached plan variant to investigate first</h3><p>SQL Evaluate compares imported spill pages in a fixed order. It does not calculate an opaque severity score.</p></div>
@@ -116,7 +151,8 @@ export function SpillTriagePanel({ spillTriage, onSelect, onChoosePlan, onChoose
 
     <section className="spill-diagnosis" aria-labelledby="spill-diagnosis-title">
       <div className="spill-stage-head"><span>STAGE 2 / PLAN DIAGNOSIS</span><h3 id="spill-diagnosis-title">Connect stable identity to operator evidence</h3></div>
-      {!selected ? <p>Select a candidate after importing a supported export.</p> : !resolution?.connected ? <div className="spill-match-missing"><strong>{resolution?.blockedByConflict ? "Stable identity conflicts" : resolution?.ambiguous ? "Matching plan is ambiguous" : "No stably correlated plan"}</strong><p>{resolution?.reason ?? "No plan was supplied."} A cached handle may have expired, or the matching plan may not have been supplied. Similar SQL text is never used as a match.</p>{resolution?.ambiguous && resolution.alternatives.length > 1 && <div className="spill-alternatives" role="group" aria-label="Equally strong matching plan statements">{resolution.alternatives.map((alternative) => <article key={`${alternative.artifactId}:${alternative.statementId}`}><div><strong>{alternative.fileName} · statement {alternative.statementIndex + 1}</strong><small>{alternative.statementType} · {statementIdentity(alternative.identity)}</small><p>{alternative.reason}</p></div><button type="button" onClick={() => onChooseStatement(selected.id, alternative.artifactId, alternative.statementId)} aria-label={`Choose statement ${alternative.statementIndex + 1} from ${alternative.fileName} for ${candidateActionLabel(selected, true)}`}>Choose statement</button></article>)}</div>}<button type="button" className="button button-primary" onClick={onChoosePlan}>{resolution?.ambiguous ? "Import more specific plan" : "Choose matching plan"}</button></div> : <div className="spill-plan-result">
+      {visiblePlanImportMessages.map((message, index) => <div ref={index === visiblePlanImportMessages.length - 1 ? planImportNotice : undefined} tabIndex={index === visiblePlanImportMessages.length - 1 ? -1 : undefined} className={`spill-match-state spill-import-status spill-match-state-${message.severity}`} role={message.severity === "error" ? "alert" : "status"} aria-label={`${message.severity === "error" ? "Error" : message.severity === "warning" ? "Warning" : "Information"}: ${importStatusTitle(message)}`} key={`${message.fileName}:${message.code}:${index}`}><span className="spill-match-severity"><span aria-hidden="true">{message.severity === "error" ? "×" : message.severity === "warning" ? "!" : "i"}</span>{message.severity === "error" ? "Error" : message.severity === "warning" ? "Warning" : "Information"}</span><strong>{importStatusTitle(message)}</strong><p><b>{message.fileName}</b>: {message.message}</p></div>)}
+      {!selected ? <p>Select a candidate after importing a supported export.</p> : !resolution?.connected ? <div className={`spill-match-state spill-match-state-${missingMatchTone}`} role={missingMatchTone === "error" ? "alert" : "status"} aria-label={`${missingMatchLabel}: ${missingMatchTitle}`}><span className="spill-match-severity"><span aria-hidden="true">{missingMatchTone === "error" ? "×" : missingMatchTone === "warning" ? "!" : "i"}</span>{missingMatchLabel}</span><strong>{missingMatchTitle}</strong><p>{missingMatchReason}</p>{resolution?.ambiguous && resolution.alternatives.length > 1 && <div className="spill-alternatives" role="group" aria-label="Equally strong matching plan statements">{resolution.alternatives.map((alternative) => <article key={`${alternative.artifactId}:${alternative.statementId}`}><div><strong>{alternative.fileName} · statement {alternative.statementIndex + 1}</strong><small>{alternative.statementType} · {statementIdentity(alternative.identity)}</small><p>{alternative.reason}</p></div><button type="button" onClick={() => onChooseStatement(selected.id, alternative.artifactId, alternative.statementId)} aria-label={`Choose statement ${alternative.statementIndex + 1} from ${alternative.fileName} for ${candidateActionLabel(selected, true)}`}>Choose statement</button></article>)}</div>}<button type="button" className="button button-primary" onClick={onChoosePlan}>{resolution?.ambiguous ? "Import more specific plan" : spillTriage.plans.length ? "Choose another plan" : "Choose matching plan"}</button></div> : <div className="spill-plan-result">
         <div className="spill-plan-match"><span>{resolution.selectionMethod === "manual" ? "MANUALLY SELECTED" : resolution.quality} STABLE-IDENTITY MATCH</span><strong>{resolution.evidence?.fileName}</strong><p>{resolution.reason}</p>{resolution.selectionMethod === "manual" && <button type="button" onClick={() => onClearStatement(selected.id)}>Clear manual choice</button>}</div>
         {!resolution.evidence?.plan.isActual || !resolution.statement?.isActual ? <div className="spill-estimated"><strong>Estimated/cached plan evidence</strong><p>This plan can show compile-time shape and estimates. Runtime operator counts and spill volumes are not available and are not inferred from the BlitzCache row.</p></div> : <div className="spill-operators">
           <strong>{actualSpills.length} spilling operator{actualSpills.length === 1 ? "" : "s"} in the matched actual statement{resolution.statement.degreeOfParallelism != null ? ` · DOP ${resolution.statement.degreeOfParallelism}` : ""}</strong>

@@ -71,6 +71,7 @@ main { width: min(1520px, calc(100% - clamp(28px, 8vw, 120px))); margin: 0 auto;
 .profile-audit pre { max-height: 330px; overflow: auto; margin: 0; padding: 16px 20px; border-top: 1px solid var(--line); background: #061018; color: #a7c3cd; font: 10px/1.55 Consolas, monospace; }
 .profile-audit form { padding: 16px 20px; border-top: 1px solid var(--line); display: grid; grid-template-columns: 1fr 1fr auto; align-items: end; gap: 9px; }.profile-audit form label { display: grid; gap: 5px; color: #7f9aa6; font: 650 9px Bahnschrift, sans-serif; letter-spacing: .08em; text-transform: uppercase; }
 .profile-preview { padding: 14px 20px; border-top: 1px solid #2b6575; background: #0d2935; display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 9px; }.profile-preview small { max-width: 760px; }
+.profile-import-result { margin: 12px 0; padding: 13px 20px; border: 1px solid; border-left-width: 4px; }.profile-import-result strong { display: block; font: 700 12px Bahnschrift, sans-serif; letter-spacing: .04em; }.profile-import-result p { margin: 6px 0 0; line-height: 1.5; }.profile-import-result-info { border-color: #367486; background: #102832; color: #a9c9d2; }.profile-import-result-success { border-color: #3c8a71; background: #102d29; color: #b6e1d4; }.profile-import-result-error { border-color: #a64d4d; background: #321718; color: #efc0c0; }
 .profile-message, .profile-status { margin: 0; padding: 10px 20px; border-top: 1px solid var(--line); color: #9eb3bd; font-size: 11px; }.profile-status-warning, .profile-message { color: #e5c786; background: #33290e33; }
 .profile-disclosure { margin: 0; padding: 10px 20px; border-top: 1px solid var(--line); color: #c7b875; background: #2d260f55; font-size: 11px; }
 .processing, .error-panel, .upload-message-panel { margin-top: 14px; padding: 18px 22px; display: flex; align-items: center; gap: 16px; border: 1px solid var(--line); background: #0a1821; }
@@ -548,9 +549,21 @@ footer { color: #708995; font-size: 12px; }
 .spill-stage-head p { margin: 0; max-width: 900px; color: #9cb2ba; font-size: 12px; line-height: 1.55; }
 .spill-disclosure { padding: 10px 13px; border-left: 3px solid #d3a83f; background: #33280c88; color: #d5c58e; font-size: 12px; }
 .spill-disclosure b { margin-right: 8px; color: #f0ca67; text-transform: uppercase; }
-.spill-empty, .spill-match-missing, .spill-estimated { padding: 20px; border: 1px dashed #315d6b; background: #10252e; color: #a9bdc4; }
-.spill-empty strong, .spill-match-missing strong, .spill-estimated strong { color: #e2eef1; }
-.spill-empty p, .spill-match-missing p, .spill-estimated p { line-height: 1.55; }
+.spill-empty, .spill-estimated { padding: 20px; border: 1px dashed #315d6b; background: #10252e; color: #a9bdc4; }
+.spill-empty strong, .spill-estimated strong { color: #e2eef1; }
+.spill-empty p, .spill-estimated p { line-height: 1.55; }
+.spill-match-state { padding: 18px 20px; border: 1px solid; border-left-width: 4px; }
+.spill-import-status { margin: 12px 0; }
+.spill-match-state > strong { display: block; margin-top: 8px; font: 650 17px Bahnschrift, sans-serif; }
+.spill-match-state > p { max-width: 900px; margin: 7px 0 16px; line-height: 1.55; }
+.spill-match-severity { display: flex; align-items: center; gap: 7px; font: 700 10px Bahnschrift, sans-serif; letter-spacing: .1em; text-transform: uppercase; }
+.spill-match-severity > span { display: inline-grid; width: 18px; height: 18px; place-items: center; border: 1px solid currentColor; border-radius: 50%; font-size: 12px; line-height: 1; }
+.spill-match-state-info { border-color: #367486; background: #102832; color: #a9c9d2; }
+.spill-match-state-info .spill-match-severity, .spill-match-state-info > strong { color: #9ce4ef; }
+.spill-match-state-warning { border-color: #a37d22; background: #2b240f; color: #e1cc91; }
+.spill-match-state-warning .spill-match-severity, .spill-match-state-warning > strong { color: #ffd66b; }
+.spill-match-state-error { border-color: #a64d4d; background: #321718; color: #efc0c0; }
+.spill-match-state-error .spill-match-severity, .spill-match-state-error > strong { color: #ffb8b8; }
 .spill-summary { display: grid; grid-template-columns: repeat(3, 1fr); border: 1px solid #284e5b; }
 .spill-summary article { min-width: 0; padding: 15px; border-right: 1px solid #284e5b; }
 .spill-summary article:last-child { border-right: 0; }

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { inspectSpillTriageMatrix } from "../deepAnalysis/spillTriage";
 import type { SpillTriageState } from "../deepAnalysis/types";
@@ -39,6 +39,48 @@ describe("SpillTriagePanel", () => {
     render(<SpillTriagePanel spillTriage={state(true)} onSelect={vi.fn()} onChoosePlan={vi.fn()} {...callbacks} />);
     expect(screen.getByText(/exact stable-identity match/i)).toBeTruthy();
     expect(screen.getByText(/runtime operator counts and spill volumes are not available/i)).toBeTruthy();
+  });
+
+  it("presents plan-correlation outcomes with explicit accessible severity", () => {
+    const missing = render(<SpillTriagePanel spillTriage={state()} onSelect={vi.fn()} onChoosePlan={vi.fn()} {...callbacks} />);
+    const information = screen.getByRole("status", { name: /information: plan needed/i });
+    expect(information.classList.contains("spill-match-state-info")).toBe(true);
+    missing.unmount();
+
+    const identityFree = state();
+    identityFree.plans = [{ artifactId: "p", fileName: "valid-without-identity.sqlplan", plan: { id: "p", sourceId: "p", fileName: "valid-without-identity.sqlplan", version: "1.6", isActual: false, warnings: [], sourceKind: "Cached estimated", statements: [{ id: "s", statementText: "SELECT 1", statementType: "SELECT", estimatedCost: 1, isActual: false, missingIndexImpact: null, warnings: [], operators: [], queryIdentity: {} }] } }];
+    const warningRender = render(<SpillTriagePanel spillTriage={identityFree} onSelect={vi.fn()} onChoosePlan={vi.fn()} {...callbacks} />);
+    const warning = screen.getByRole("status", { name: /warning: imported plan cannot be correlated/i });
+    expect(warning.classList.contains("spill-match-state-warning")).toBe(true);
+    expect(within(warning).getByText(/valid, but it does not contain a correlation-ready stable identifier/i)).toBeTruthy();
+    warningRender.unmount();
+
+    const conflict = state(true);
+    conflict.plans[0]!.plan.statements[0]!.queryIdentity!.planHandle = "0xDIFFERENT";
+    render(<SpillTriagePanel spillTriage={conflict} onSelect={vi.fn()} onChoosePlan={vi.fn()} {...callbacks} />);
+    const error = screen.getByRole("alert", { name: /error: stable identity conflict/i });
+    expect(error.classList.contains("spill-match-state-error")).toBe(true);
+  });
+
+  it("keeps a rejected plan upload visible beside the matching-plan action", () => {
+    const props = {
+      spillTriage: state(),
+      onSelect: vi.fn(),
+      onChoosePlan: vi.fn(),
+      ...callbacks,
+      planImportMessages: [{
+        fileName: "blitzcache-plan.sqlplan",
+        severity: "error",
+        code: "plan-invalid",
+        message: "The XML document does not contain a ShowPlanXML root. The file was preserved for provenance but was not added as usable plan evidence.",
+      }],
+    } as unknown as Parameters<typeof SpillTriagePanel>[0];
+
+    render(<SpillTriagePanel {...props} />);
+
+    const error = screen.getByRole("alert", { name: /error: plan import failed/i });
+    expect(error.classList.contains("spill-match-state-error")).toBe(true);
+    expect(within(error).getByText(/does not contain a ShowPlanXML root/i)).toBeTruthy();
   });
 
   it("names a Query Store candidate in the cumulative summary and gives every action a unique accessible name", () => {

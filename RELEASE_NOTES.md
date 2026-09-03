@@ -1,4 +1,25 @@
-# SQL Evaluate 1.3.0
+# SQL Evaluate 1.3.2
+
+Release date: 2026-09-02
+
+## Visible plan and profile import outcomes
+
+- Moved plan-import outcomes to Spill Triage Stage 2, where malformed or unusable Showplans now appear as direct, file-specific red errors instead of looking like a no-op; non-plan evidence failures remain visible at the workspace level.
+- Kept valid but uncorrelatable plans amber, duplicates informational, and moved keyboard focus to the current outcome after an import.
+- Moved threshold-profile previews and import results beside the profile controls, added accessible focus and severity treatment, and clarified that profiles are stored but never activated automatically.
+- Recognize a re-imported copy of the exact bundled profile as already available instead of leaving a hidden reserved-namespace failure; a conflicting bundled profile remains blocked.
+
+## SQL Evaluate 1.3.1
+
+Release date: 2026-09-02
+
+## Plan-import clarity and status treatment
+
+- Added privacy-safe, file-specific diagnostics for empty, unsupported, duplicate, escaped, malformed, incorrectly encoded, and identity-free Showplan uploads.
+- Distinguished plan-correlation information, warnings, and errors with explicit text, icons, accessible live-region roles, and blue, amber, or red treatments that do not rely on color alone.
+- Clarified when a valid imported Showplan lacks the stable identifiers needed to connect it automatically to a `sp_BlitzCache` candidate.
+
+## SQL Evaluate 1.3.0
 
 Release date: 2026-08-28
 

@@ -34,6 +34,21 @@ describe("tabular Showplan provenance", () => {
     expect(imported.deepCase.spillTriage?.plans[0].plan.statements[0].queryIdentity?.planHandle).toBe("0xBBBB");
   });
 
+  it("uses exact plan-handle provenance when SQL Server emits a different embedded SqlHandle", async () => {
+    let deepCase = createSpillTriageCase("2026-09-03T12:00:00Z", "sql-handle-provenance");
+    const spill = new File(["Total Spills,Plan Handle,SQL Handle,Query Hash,Query Plan Hash,Database ID\n1000,0xAABB,0xCCDD,0x0102030405060708,0x1111111111111111,7\n"], "spill.csv");
+    deepCase = (await addEvidenceFiles(deepCase, [spill], "2026-09-03T12:01:00Z")).deepCase;
+    const embedded = plan().replace('StatementType="SELECT"', 'StatementType="SELECT" SqlHandle="0xDIFFERENT" QueryHash="0x0102030405060708" QueryPlanHash="0x1111111111111111"');
+    const result = [
+      "adapter_id,evidence_set,captured_at,plan_handle,sql_handle,query_hash,query_plan_hash,database_id,query_plan",
+      `SQL_EVALUATE_NATIVE_V1,CACHED_PLAN_PROVENANCE,2026-09-03T12:02:00Z,0xAABB,0xCCDD,0x0102030405060708,0x1111111111111111,7,${csvCell(embedded)}`,
+    ].join("\n") + "\n";
+    deepCase = (await addEvidenceFiles(deepCase, [new File([result], "cached-plan.csv")], "2026-09-03T12:02:00Z")).deepCase;
+    const resolution = resolveCandidatePlan(deepCase.spillTriage!.candidates[0], deepCase.spillTriage!.plans);
+    expect(resolution).toMatchObject({ connected: true, quality: "Exact" });
+    expect(resolution.statement?.queryIdentity).toMatchObject({ planHandle: "0xAABB", sqlHandle: "0xCCDD" });
+  });
+
   it("connects a Query Store export through paired hashes and database identity", async () => {
     let deepCase = createSpillTriageCase("2026-09-03T12:00:00Z", "query-store");
     const spill = new File(["Total Spills,Query Hash,Query Plan Hash,Database ID\n1000,0x0102030405060708,0x1111111111111111,7\n"], "spill.csv");

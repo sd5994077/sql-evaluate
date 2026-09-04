@@ -61,6 +61,9 @@ describe("server capability snapshots", () => {
   it("generates bounded manual scripts without cache eviction, maintenance, or AI options", () => {
     const snapshotSql = capabilitySnapshotCommand("case");
     expect(snapshotSql).toContain("SQL_EVALUATE_CAPABILITIES_V1");
+    expect(snapshotSql).toContain("SET QUOTED_IDENTIFIER ON;");
+    expect(snapshotSql).toContain("WHEN '1' THEN 'ON' WHEN '0' THEN 'OFF'");
+    expect(snapshotSql).toContain("ORDER BY t.tool_id;';\n\nEXEC sys.sp_executesql @Discovery");
     expect(snapshotSql).toContain("@VersionCheckMode=1");
     expect(snapshotSql).not.toMatch(/\b(?:ALTER|DROP|DBCC|KILL)\b/i);
     expect(snapshotSql).not.toContain("@AI");

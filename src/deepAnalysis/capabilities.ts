@@ -125,15 +125,21 @@ export function capabilitySnapshotCommand(caseId = "UNASSIGNED"): string {
    READ-ONLY DISCOVERY. Run in the affected database and save the single result grid as CSV or XLSX.
    SQL Evaluate never executes this script. Review @UtilityDatabase if community tools live elsewhere. */
 SET NOCOUNT ON;
+SET QUOTED_IDENTIFIER ON;
 DECLARE @SqlEvaluateCase varchar(80) = '${safeCaseId}';
-DECLARE @UtilityDatabase sysname = DB_NAME(); -- Change to master or your DBA utility database when needed.
+DECLARE @UtilityDatabase sysname; -- Change to master or your DBA utility database when needed.
+SET @UtilityDatabase = DB_NAME();
+DECLARE @AffectedDatabaseId int;
+DECLARE @AffectedDatabaseName sysname;
+SET @AffectedDatabaseId = DB_ID();
+SET @AffectedDatabaseName = DB_NAME();
 DECLARE @CapturedAt datetimeoffset = SYSDATETIMEOFFSET();
 DECLARE @ProductVersion nvarchar(128) = CONVERT(nvarchar(128), SERVERPROPERTY('ProductVersion'));
 DECLARE @MajorVersion int = TRY_CONVERT(int, LEFT(@ProductVersion, CHARINDEX('.', @ProductVersion + '.') - 1));
 DECLARE @ProductLevel nvarchar(128) = CONVERT(nvarchar(128), SERVERPROPERTY('ProductLevel'));
 DECLARE @Edition nvarchar(128) = CONVERT(nvarchar(128), SERVERPROPERTY('Edition'));
 DECLARE @EngineEdition int = TRY_CONVERT(int, SERVERPROPERTY('EngineEdition'));
-DECLARE @LastQueryPlanStats nvarchar(20) = COALESCE((SELECT TOP (1) UPPER(CONVERT(nvarchar(20), value)) FROM sys.database_scoped_configurations WHERE name = 'LAST_QUERY_PLAN_STATS'), 'UNAVAILABLE');
+DECLARE @LastQueryPlanStats nvarchar(20) = COALESCE((SELECT TOP (1) CASE CONVERT(nvarchar(20), value) WHEN '1' THEN 'ON' WHEN '0' THEN 'OFF' ELSE UPPER(CONVERT(nvarchar(20), value)) END FROM sys.database_scoped_configurations WHERE name = 'LAST_QUERY_PLAN_STATS'), 'UNAVAILABLE');
 DECLARE @ViewDatabaseState bit = HAS_PERMS_BY_NAME(DB_NAME(), 'DATABASE', 'VIEW DATABASE STATE');
 DECLARE @ViewDatabasePerformanceState bit = CASE WHEN @MajorVersion >= 16 THEN HAS_PERMS_BY_NAME(DB_NAME(), 'DATABASE', 'VIEW DATABASE PERFORMANCE STATE') END;
 DECLARE @QueryStoreState nvarchar(60) = 'PERMISSION_REQUIRED';
@@ -179,10 +185,12 @@ INSERT @Tools (tool_id, tool_name, object_type, required_parameter) VALUES
 UPDATE t
 SET installed = 1,
     tool_schema = found.tool_schema,
-    compatible_signature = CASE WHEN t.required_parameter IS NULL OR EXISTS (SELECT 1 FROM sys.parameters AS rp WHERE rp.object_id = found.object_id AND rp.name = t.required_parameter) THEN 1 ELSE 0 END,
-    supports_version_check = CASE WHEN t.object_type = ''P'' AND NOT EXISTS
-      (SELECT required.name FROM (VALUES (''@Version''), (''@VersionDate''), (''@VersionCheckMode'')) AS required(name)
-       WHERE NOT EXISTS (SELECT 1 FROM sys.parameters AS vp WHERE vp.object_id = found.object_id AND vp.name = required.name)) THEN 1 ELSE 0 END,
+    compatible_signature = CASE WHEN t.required_parameter IS NULL OR EXISTS (SELECT 1 FROM sys.parameters AS rp WHERE rp.object_id = found.object_id AND rp.name COLLATE DATABASE_DEFAULT = t.required_parameter COLLATE DATABASE_DEFAULT) THEN 1 ELSE 0 END,
+    supports_version_check = CASE WHEN t.object_type = ''P''
+      AND EXISTS (SELECT 1 FROM sys.parameters AS vp WHERE vp.object_id = found.object_id AND vp.name COLLATE DATABASE_DEFAULT = ''@Version'')
+      AND EXISTS (SELECT 1 FROM sys.parameters AS vp WHERE vp.object_id = found.object_id AND vp.name COLLATE DATABASE_DEFAULT = ''@VersionDate'')
+      AND EXISTS (SELECT 1 FROM sys.parameters AS vp WHERE vp.object_id = found.object_id AND vp.name COLLATE DATABASE_DEFAULT = ''@VersionCheckMode'')
+      THEN 1 ELSE 0 END,
     detected_parameters = STUFF((SELECT '','' + p.name FROM sys.parameters AS p WHERE p.object_id = found.object_id ORDER BY p.parameter_id FOR XML PATH(''''), TYPE).value(''.'', ''nvarchar(max)''), 1, 1, '''')
 FROM @Tools AS t
 OUTER APPLY
@@ -190,8 +198,9 @@ OUTER APPLY
   SELECT TOP (1) o.object_id, s.name AS tool_schema
   FROM sys.objects AS o
   JOIN sys.schemas AS s ON s.schema_id = o.schema_id
-  WHERE o.name = t.tool_name AND o.type = t.object_type
-  ORDER BY CASE WHEN s.name = ''dbo'' THEN 0 ELSE 1 END, s.name, o.object_id
+  WHERE o.name COLLATE DATABASE_DEFAULT = t.tool_name COLLATE DATABASE_DEFAULT
+    AND o.type COLLATE DATABASE_DEFAULT = t.object_type COLLATE DATABASE_DEFAULT
+  ORDER BY CASE WHEN s.name COLLATE DATABASE_DEFAULT = ''dbo'' THEN 0 ELSE 1 END, s.name, o.object_id
 ) AS found
 WHERE found.object_id IS NOT NULL;
 
@@ -242,12 +251,12 @@ SELECT
   CONVERT(varchar(30), t.tool_version_date, 126) AS tool_version_date,
   t.detected_parameters
 FROM @Tools AS t
-ORDER BY t.tool_id;'';
+ORDER BY t.tool_id;';
 
 EXEC sys.sp_executesql @Discovery,
   N'@CaseId varchar(80), @Captured datetimeoffset, @VersionNumber nvarchar(128), @Level nvarchar(128), @EditionName nvarchar(128), @Engine int, @AffectedDatabaseId int, @AffectedDatabaseName sysname, @Lqps nvarchar(20), @QueryStore nvarchar(60), @ViewDbState bit, @ViewDbPerformanceState bit',
   @CaseId=@SqlEvaluateCase, @Captured=@CapturedAt, @VersionNumber=@ProductVersion, @Level=@ProductLevel,
-  @EditionName=@Edition, @Engine=@EngineEdition, @AffectedDatabaseId=DB_ID(), @AffectedDatabaseName=DB_NAME(),
+  @EditionName=@Edition, @Engine=@EngineEdition, @AffectedDatabaseId=@AffectedDatabaseId, @AffectedDatabaseName=@AffectedDatabaseName,
   @Lqps=@LastQueryPlanStats, @QueryStore=@QueryStoreState,
   @ViewDbState=@ViewDatabaseState, @ViewDbPerformanceState=@ViewDatabasePerformanceState;`;
 }

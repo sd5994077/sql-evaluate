@@ -366,6 +366,34 @@ export interface SpillPlanAlternative {
   reason: string;
 }
 
+function normalizedIdentityText(value: string | null | undefined): string | null {
+  const normalized = String(value ?? "").trim().toLowerCase().replace(/^0x/, "");
+  return normalized || null;
+}
+
+function sameIdentityText(left: string | null | undefined, right: string | null | undefined): boolean {
+  const normalizedLeft = normalizedIdentityText(left);
+  const normalizedRight = normalizedIdentityText(right);
+  return Boolean(normalizedLeft && normalizedRight && normalizedLeft === normalizedRight);
+}
+
+function hasExactStatementDiscriminator(candidate: DeepQueryIdentity, statement: DeepQueryIdentity): boolean {
+  const offsetsMatch = sameIdentityText(candidate.sqlHandle, statement.sqlHandle)
+    && candidate.statementStartOffset != null
+    && candidate.statementEndOffset != null
+    && candidate.statementStartOffset === statement.statementStartOffset
+    && candidate.statementEndOffset === statement.statementEndOffset;
+  const hashesMatch = sameIdentityText(candidate.queryHash, statement.queryHash)
+    && sameIdentityText(candidate.queryPlanHash, statement.queryPlanHash);
+  const queryStoreMatches = candidate.databaseId != null
+    && candidate.queryStoreQueryId != null
+    && candidate.queryStorePlanId != null
+    && candidate.databaseId === statement.databaseId
+    && candidate.queryStoreQueryId === statement.queryStoreQueryId
+    && candidate.queryStorePlanId === statement.queryStorePlanId;
+  return offsetsMatch || hashesMatch || queryStoreMatches;
+}
+
 export function resolveCandidatePlan(candidate: SpillCandidate, plans: SpillPlanEvidence[], manualSelection?: SpillManualPlanSelection | null): SpillPlanResolution {
   const weight = { Exact: 3, Strong: 2, Candidate: 1, None: 0 } as const;
   const evaluated = plans.flatMap((evidence) => evidence.plan.statements.map((statement, statementIndex) => {
@@ -374,16 +402,45 @@ export function resolveCandidatePlan(candidate: SpillCandidate, plans: SpillPlan
     return { evidence, statement, statementIndex, match };
   }));
   const matches = evaluated.filter((item) => item.match.matched);
-  matches.sort((left, right) => weight[right.match.quality] - weight[left.match.quality]);
+  // When an exact identity has both compile-only and runtime evidence, prefer the
+  // matched statement that contains runtime counters. Equally strong statements
+  // of the same evidence kind remain ambiguous.
+  const evidencePriority = (item: typeof matches[number]) => item.statement.isActual ? 1 : 0;
+  matches.sort((left, right) =>
+    weight[right.match.quality] - weight[left.match.quality]
+    || evidencePriority(right) - evidencePriority(left),
+  );
   const best = matches[0];
+  const statementLocalConflicts = new Set([
+    "query_plan_hash conflicts",
+    "statement_start_offset conflicts",
+    "statement_end_offset conflicts",
+    "Query Store query ID conflicts",
+    "Query Store plan ID conflicts",
+  ]);
+  const isDisambiguatedSiblingConflict = (item: typeof evaluated[number]) => Boolean(
+    item.match.conflicts.every((conflict) => statementLocalConflicts.has(conflict))
+    && sameIdentityText(candidate.identity.planHandle, item.statement.queryIdentity?.planHandle)
+    && matches.some((match) => match.match.quality === "Exact"
+      && match.evidence.artifactId === item.evidence.artifactId
+      && match.statementIndex !== item.statementIndex
+      && sameIdentityText(candidate.identity.planHandle, match.statement.queryIdentity?.planHandle)
+      && hasExactStatementDiscriminator(candidate.identity, match.statement.queryIdentity ?? {})),
+  );
   const strongestConflict = evaluated
-    .filter((item) => item.match.conflicts.length > 0)
+    .filter((item) => item.match.conflicts.length > 0 && !isDisambiguatedSiblingConflict(item))
     .sort((left, right) => weight[right.match.quality] - weight[left.match.quality])[0];
+  // A cached batch can contain several statements that share plan_handle. When
+  // one statement has an equally strong, non-conflicting match, it is more
+  // specific evidence than a sibling statement with different offsets or hashes.
   if (strongestConflict && (!best || weight[strongestConflict.match.quality] >= weight[best.match.quality])) {
     return { connected: false, ambiguous: false, blockedByConflict: true, quality: strongestConflict.match.quality, selectionMethod: "none", reason: strongestConflict.match.reason, alternatives: [] };
   }
   if (!best || weight[best.match.quality] < weight.Strong) return { connected: false, ambiguous: false, blockedByConflict: false, quality: best?.match.quality ?? "None", selectionMethod: "none", reason: best?.match.reason ?? "No supported stable identifier matches.", alternatives: [] };
-  const peers = matches.filter((item) => weight[item.match.quality] === weight[best.match.quality]);
+  const peers = matches.filter((item) =>
+    weight[item.match.quality] === weight[best.match.quality]
+    && evidencePriority(item) === evidencePriority(best),
+  );
   const alternatives: SpillPlanAlternative[] = peers.map((item) => ({
     artifactId: item.evidence.artifactId,
     fileName: item.evidence.fileName,

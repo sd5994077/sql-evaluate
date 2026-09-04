@@ -112,6 +112,84 @@ describe("Spill Triage", () => {
     expect(resolution.reason).toMatch(/plan_handle conflicts/i);
   });
 
+  it("selects the exact statement from a cached multi-statement batch", () => {
+    const candidate = inspectSpillTriageMatrix([
+      ["Total Spills", "Plan Handle", "SQL Handle", "Query Hash", "Query Plan Hash", "Statement Start Offset", "Statement End Offset"],
+      [100, "0xAAA", "0xSQL", "0xQUERY", "0xTARGET", 100, 200],
+    ], { artifactId: "batch", fileName: "batch.csv" }).candidates[0];
+    const base = { sourceId: "p", fileName: "p.sqlplan", version: null, isActual: false, warnings: [] };
+    const plan = { ...base, id: "p", statements: [
+      { id: "other", statementText: "INSERT", statementType: "INSERT", estimatedCost: 1, isActual: false, missingIndexImpact: null, operators: [], warnings: [], queryIdentity: { planHandle: "0xAAA", sqlHandle: "0xSQL", queryHash: "0xQUERY", queryPlanHash: "0xOTHER", statementStartOffset: 0, statementEndOffset: 90 } },
+      { id: "target", statementText: "SELECT", statementType: "SELECT", estimatedCost: 1, isActual: false, missingIndexImpact: null, operators: [], warnings: [], queryIdentity: { planHandle: "0xAAA", sqlHandle: "0xSQL", queryHash: "0xQUERY", queryPlanHash: "0xTARGET", statementStartOffset: 100, statementEndOffset: 200 } },
+    ] };
+    expect(resolveCandidatePlan(candidate, [{ artifactId: "p", fileName: "p.sqlplan", plan }] as SpillPlanEvidence[])).toMatchObject({ connected: true, quality: "Exact", selectionMethod: "automatic", statement: { id: "target" } });
+  });
+
+  it("blocks an equally strong conflicting statement from a separate artifact", () => {
+    const candidate = inspectSpillTriageMatrix([
+      ["Total Spills", "Plan Handle", "SQL Handle", "Query Hash", "Query Plan Hash", "Statement Start Offset", "Statement End Offset"],
+      [100, "0xAAA", "0xSQL", "0xQUERY", "0xTARGET", 100, 200],
+    ], { artifactId: "spill", fileName: "spill.csv" }).candidates[0];
+    const statement = (id: string, queryPlanHash: string) => ({ id, statementText: "SELECT", statementType: "SELECT", estimatedCost: 1, isActual: false, missingIndexImpact: null, operators: [], warnings: [], queryIdentity: { planHandle: "0xAAA", sqlHandle: "0xSQL", queryHash: "0xQUERY", queryPlanHash, statementStartOffset: 100, statementEndOffset: 200 } });
+    const evidence = (artifactId: string, queryPlanHash: string) => ({ artifactId, fileName: `${artifactId}.sqlplan`, plan: { id: artifactId, sourceId: artifactId, fileName: `${artifactId}.sqlplan`, version: null, isActual: false, warnings: [], statements: [statement(`${artifactId}-statement`, queryPlanHash)] } });
+
+    expect(resolveCandidatePlan(candidate, [evidence("matching", "0xTARGET"), evidence("conflicting", "0xOTHER")] as SpillPlanEvidence[])).toMatchObject({
+      connected: false,
+      blockedByConflict: true,
+      quality: "Exact",
+    });
+  });
+
+  it("does not suppress a same-batch conflict without statement-level disambiguation", () => {
+    const candidate = inspectSpillTriageMatrix([
+      ["Total Spills", "Plan Handle", "Query Plan Hash"],
+      [100, "0xAAA", "0xTARGET"],
+    ], { artifactId: "spill", fileName: "spill.csv" }).candidates[0];
+    const statement = (id: string, queryPlanHash: string) => ({ id, statementText: "SELECT", statementType: "SELECT", estimatedCost: 1, isActual: false, missingIndexImpact: null, operators: [], warnings: [], queryIdentity: { planHandle: "0xAAA", queryPlanHash } });
+    const plan = { id: "batch", sourceId: "batch", fileName: "batch.sqlplan", version: null, isActual: false, warnings: [], statements: [statement("target", "0xTARGET"), statement("sibling", "0xOTHER")] };
+
+    expect(resolveCandidatePlan(candidate, [{ artifactId: "batch", fileName: "batch.sqlplan", plan }] as SpillPlanEvidence[])).toMatchObject({
+      connected: false,
+      blockedByConflict: true,
+      quality: "Exact",
+    });
+  });
+
+  it("does not treat a compile-only match as actual because a sibling has runtime data", () => {
+    const candidate = inspectSpillTriageMatrix([
+      ["Total Spills", "Plan Handle", "Query Hash", "Query Plan Hash"],
+      [100, "0xAAA", "0xQUERY", "0xTARGET"],
+    ], { artifactId: "spill", fileName: "spill.csv" }).candidates[0];
+    const target = (id: string) => ({ id, statementText: "SELECT", statementType: "SELECT", estimatedCost: 1, isActual: false, missingIndexImpact: null, operators: [], warnings: [], queryIdentity: { planHandle: "0xAAA", queryHash: "0xQUERY", queryPlanHash: "0xTARGET" } });
+    const cached = { artifactId: "cached", fileName: "cached.sqlplan", plan: { id: "cached", sourceId: "cached", fileName: "cached.sqlplan", version: null, isActual: false, warnings: [], statements: [target("cached-target")] } };
+    const mixed = { artifactId: "mixed", fileName: "mixed.sqlplan", plan: { id: "mixed", sourceId: "mixed", fileName: "mixed.sqlplan", version: null, isActual: true, warnings: [], statements: [
+      { id: "actual-sibling", statementText: "UPDATE", statementType: "UPDATE", estimatedCost: 1, isActual: true, missingIndexImpact: null, operators: [], warnings: [], queryIdentity: { planHandle: "0xBBB" } },
+      target("mixed-target"),
+    ] } };
+
+    expect(resolveCandidatePlan(candidate, [cached, mixed] as SpillPlanEvidence[])).toMatchObject({
+      connected: false,
+      ambiguous: true,
+      blockedByConflict: false,
+    });
+  });
+
+  it("prefers evidence when the matched statement itself has runtime data", () => {
+    const candidate = inspectSpillTriageMatrix([
+      ["Total Spills", "Plan Handle", "Query Hash", "Query Plan Hash"],
+      [100, "0xAAA", "0xQUERY", "0xTARGET"],
+    ], { artifactId: "spill", fileName: "spill.csv" }).candidates[0];
+    const statement = (id: string, isActual: boolean) => ({ id, statementText: "SELECT", statementType: "SELECT", estimatedCost: 1, isActual, missingIndexImpact: null, operators: [], warnings: [], queryIdentity: { planHandle: "0xAAA", queryHash: "0xQUERY", queryPlanHash: "0xTARGET" } });
+    const evidence = (artifactId: string, isActual: boolean) => ({ artifactId, fileName: `${artifactId}.sqlplan`, plan: { id: artifactId, sourceId: artifactId, fileName: `${artifactId}.sqlplan`, version: null, isActual, warnings: [], statements: [statement(`${artifactId}-target`, isActual)] } });
+
+    expect(resolveCandidatePlan(candidate, [evidence("cached", false), evidence("actual", true)] as SpillPlanEvidence[])).toMatchObject({
+      connected: true,
+      ambiguous: false,
+      evidence: { artifactId: "actual" },
+      statement: { isActual: true },
+    });
+  });
+
   it("finds the earliest major estimate error feeding a spill", () => {
     const leaf = { id: "leaf", nodeId: 3, physicalOp: "Scan", logicalOp: "Scan", estimatedRows: 1, actualRows: 100000, estimatedCost: 1, warnings: [], childNodeIds: [] };
     const middle = { ...leaf, id: "middle", nodeId: 2, physicalOp: "Join", childNodeIds: [3], actualRows: 50000 };

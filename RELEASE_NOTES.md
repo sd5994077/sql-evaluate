@@ -1,3 +1,23 @@
+# SQL Evaluate 1.4.2
+
+Release date: 2026-09-03
+
+## Capability and plan-correlation fixes
+
+- Updated `fflate` to 0.8.3 to address the ZIP64 parsing denial-of-service advisory.
+
+- Corrected capability-snapshot SQL generation and multi-statement plan provenance correlation.
+- Exact result-row plan provenance now takes precedence over a divergent embedded statement SQL handle when the plan handle agrees; contradictory plan handles continue to block automatic merging.
+
+# SQL Evaluate 1.4.1
+
+Release date: 2026-09-03
+
+## Actual-plan evidence selection
+
+- When an actual plan and a cached/estimated plan share the same strongest stable identity, Spill Triage now automatically uses the actual plan for its runtime evidence. Equally strong alternatives of the same evidence kind still require an explicit choice.
+- Added an end-to-end offline workflow test covering candidate ranking, capability routing, cached-plan provenance, and last-known actual-plan import.
+
 # SQL Evaluate 1.4.0
 
 Release date: 2026-09-03

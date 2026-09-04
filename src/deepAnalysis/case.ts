@@ -432,9 +432,18 @@ function enrichPlanWithSidecar(plan: PlanDocument, sidecar: DeepQueryIdentity): 
   const current = target.queryIdentity ?? {};
   const fields: Array<keyof PlanQueryIdentity> = ["sqlHandle", "planHandle", "queryHash", "queryPlanHash", "statementStartOffset", "statementEndOffset", "queryStoreQueryId", "queryStorePlanId", "databaseId"];
   const conflicts = fields.filter((field) => normalizedIdentityValue(current[field]) !== null && normalizedIdentityValue(sidecar[field]) !== null && normalizedIdentityValue(current[field]) !== normalizedIdentityValue(sidecar[field]));
-  if (conflicts.length) return { plan, warning: `Showplan identity conflicts with its result-row provenance for ${conflicts.join(", ")}; SQL Evaluate did not merge the sidecar identity.` };
+  // SQL Server can emit a statement SqlHandle in a cached Showplan that differs
+  // from the sql_handle on the exact dm_exec_query_stats row. An exact sidecar
+  // plan_handle is more specific provenance in that case. A contradictory plan
+  // handle (or any other conflict) still prevents automatic merging.
+  const sidecarPlanMatches = sidecar.planHandle
+    && (!current.planHandle || normalizedIdentityValue(current.planHandle) === normalizedIdentityValue(sidecar.planHandle));
+  const blockingConflicts = conflicts.filter((field) => field !== "sqlHandle" || !sidecarPlanMatches);
+  if (blockingConflicts.length) return { plan, warning: `Showplan identity conflicts with its result-row provenance for ${blockingConflicts.join(", ")}; SQL Evaluate did not merge the sidecar identity.` };
   const planSidecar = Object.fromEntries(fields.map((field) => [field, sidecar[field]]).filter(([, value]) => value !== null && value !== undefined && value !== ""));
-  const merged = { ...planSidecar, ...Object.fromEntries(Object.entries(current).filter(([, value]) => value !== null && value !== undefined && value !== "")) } as PlanQueryIdentity;
+  const embeddedIdentity = Object.fromEntries(Object.entries(current)
+    .filter(([field, value]) => value !== null && value !== undefined && value !== "" && !(field === "sqlHandle" && sidecarPlanMatches))) as PlanQueryIdentity;
+  const merged = { ...planSidecar, ...embeddedIdentity } as PlanQueryIdentity;
   return { plan: { ...plan, statements: statements.map((statement) => statement.id === target.id ? { ...statement, queryIdentity: merged } : statement) } };
 }
 

@@ -2,6 +2,26 @@
 
 All notable changes to SQL Evaluate are documented here.
 
+## 1.4.2 — 2026-09-03
+
+### Fixed
+
+- Updated `fflate` to 0.8.3 to address the ZIP64 parsing denial-of-service advisory.
+
+- Corrected Server capability-snapshot SQL generation on a live SQL Server, including dynamic discovery quoting, collation-safe catalog checks, parameter binding, and `LAST_QUERY_PLAN_STATS` normalization.
+- Preserved exact result-row plan provenance when SQL Server emits a different embedded statement SQL handle, while retaining protection against contradictory plan handles.
+- Selected the exact matching statement inside a multi-statement cached batch instead of letting a sibling statement’s offsets or plan hash block correlation.
+
+## 1.4.1 — 2026-09-03
+
+### Fixed
+
+- When both a compile-only plan and an actual plan have the same strongest stable identity, Spill Triage now selects the actual plan for runtime diagnosis. Equally strong plans of the same evidence kind remain explicitly ambiguous.
+
+### Verified
+
+- Added an end-to-end offline evidence-ladder test covering ranked candidate selection, capability import, cached-plan provenance, retained actual-plan import, and runtime spill inspection.
+
 ## Unreleased — 2026-08-31
 
 ### Added

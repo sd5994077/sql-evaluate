@@ -402,10 +402,12 @@ export function resolveCandidatePlan(candidate: SpillCandidate, plans: SpillPlan
     return { evidence, statement, statementIndex, match };
   }));
   const matches = evaluated.filter((item) => item.match.matched);
-  // When an exact identity has both compile-only and runtime evidence, prefer the
-  // matched statement that contains runtime counters. Equally strong statements
-  // of the same evidence kind remain ambiguous.
-  const evidencePriority = (item: typeof matches[number]) => item.statement.isActual ? 1 : 0;
+  // Prefer runtime evidence, then an exact current cached plan, over retained
+  // compile-only history. Equally strong statements of the same evidence kind
+  // remain ambiguous.
+  const evidencePriority = (item: typeof matches[number]) => item.statement.isActual
+    ? 2
+    : item.evidence.plan.sourceKind === "Cached estimated" ? 1 : 0;
   matches.sort((left, right) =>
     weight[right.match.quality] - weight[left.match.quality]
     || evidencePriority(right) - evidencePriority(left),

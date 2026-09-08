@@ -61,4 +61,45 @@ describe("tabular Showplan provenance", () => {
     expect(evidence.statements[0].queryIdentity).toMatchObject({ queryStoreQueryId: 7001, queryStorePlanId: 7101, databaseId: 7 });
     expect(resolution).toMatchObject({ connected: true, quality: "Strong" });
   });
+
+  it("does not compare a Query Store statement handle with a plan-cache batch handle", async () => {
+    let deepCase = createSpillTriageCase("2026-09-03T12:00:00Z", "query-store-statement-handle");
+    const spill = new File([
+      "Total Spills,SQL Handle,Query Hash,database_id,query_id,plan_id\n1000,0xBATCH,0x0102030405060708,7,7001,7101\n",
+    ], "spill.csv");
+    deepCase = (await addEvidenceFiles(deepCase, [spill], "2026-09-03T12:01:00Z")).deepCase;
+    const embedded = plan().replace(
+      'StatementType="SELECT"',
+      'StatementType="SELECT" StatementSqlHandle="0xSTATEMENT" QueryHash="0x0102030405060708" QueryPlanHash="0x1111111111111111"',
+    );
+    const result = `adapter_id,evidence_set,captured_at,database_id,query_id,plan_id,query_hash,query_plan_hash,query_plan\nQUERY_STORE_EXPORT_V1,QUERY_STORE,2026-09-03T12:02:00Z,7,7001,7101,0x0102030405060708,0x1111111111111111,${csvCell(embedded)}\n`;
+    deepCase = (await addEvidenceFiles(deepCase, [new File([result], "query-store.csv")], "2026-09-03T12:02:00Z")).deepCase;
+
+    const evidence = deepCase.spillTriage!.plans[0].plan;
+    const resolution = resolveCandidatePlan(deepCase.spillTriage!.candidates[0], deepCase.spillTriage!.plans);
+    expect(evidence.statements[0].queryIdentity?.sqlHandle).toBeUndefined();
+    expect(resolution).toMatchObject({ connected: true, quality: "Exact", blockedByConflict: false });
+  });
+
+  it("prefers an exact current cached plan over an equivalent Query Store compile plan", async () => {
+    let deepCase = createSpillTriageCase("2026-09-03T12:00:00Z", "cached-before-query-store");
+    const spill = new File([
+      "Total Spills,Plan Handle,SQL Handle,Query Hash,database_id,query_id,plan_id\n1000,0xPLAN,0xBATCH,0x0102030405060708,7,7001,7101\n",
+    ], "spill.csv");
+    deepCase = (await addEvidenceFiles(deepCase, [spill], "2026-09-03T12:01:00Z")).deepCase;
+
+    const cachedResult = `adapter_id,evidence_set,captured_at,plan_handle,sql_handle,query_hash,query_plan_hash,database_id,query_plan\nSQL_EVALUATE_NATIVE_V1,CACHED_PLAN_PROVENANCE,2026-09-03T12:02:00Z,0xPLAN,0xBATCH,0x0102030405060708,0x1111111111111111,7,${csvCell(plan())}\n`;
+    deepCase = (await addEvidenceFiles(deepCase, [new File([cachedResult], "cached-plan.csv")], "2026-09-03T12:02:00Z")).deepCase;
+
+    const queryStorePlan = plan().replace(
+      'StatementType="SELECT"',
+      'StatementType="SELECT" StatementSqlHandle="0xSTATEMENT" QueryHash="0x0102030405060708" QueryPlanHash="0x1111111111111111"',
+    );
+    const queryStoreResult = `adapter_id,evidence_set,captured_at,database_id,query_id,plan_id,query_hash,query_plan_hash,query_plan\nQUERY_STORE_EXPORT_V1,QUERY_STORE,2026-09-03T12:03:00Z,7,7001,7101,0x0102030405060708,0x1111111111111111,${csvCell(queryStorePlan)}\n`;
+    deepCase = (await addEvidenceFiles(deepCase, [new File([queryStoreResult], "query-store.csv")], "2026-09-03T12:03:00Z")).deepCase;
+
+    const resolution = resolveCandidatePlan(deepCase.spillTriage!.candidates[0], deepCase.spillTriage!.plans);
+    expect(resolution).toMatchObject({ connected: true, ambiguous: false, quality: "Exact" });
+    expect(resolution.evidence?.plan.sourceKind).toBe("Cached estimated");
+  });
 });

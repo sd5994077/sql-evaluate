@@ -438,11 +438,20 @@ function enrichPlanWithSidecar(plan: PlanDocument, sidecar: DeepQueryIdentity): 
   // handle (or any other conflict) still prevents automatic merging.
   const sidecarPlanMatches = sidecar.planHandle
     && (!current.planHandle || normalizedIdentityValue(current.planHandle) === normalizedIdentityValue(sidecar.planHandle));
-  const blockingConflicts = conflicts.filter((field) => field !== "sqlHandle" || !sidecarPlanMatches);
+  // Query Store compile plans can expose StatementSqlHandle, which is not the
+  // plan-cache batch sql_handle carried by dm_exec_query_stats. A fully scoped
+  // Query Store sidecar is authoritative for correlation and must not retain
+  // that embedded value as a comparable batch handle.
+  const scopedQueryStoreSidecar = plan.sourceKind === "Query Store"
+    && sidecar.queryStoreQueryId != null
+    && sidecar.queryStorePlanId != null
+    && sidecar.databaseId != null;
+  const sidecarOwnsSqlHandle = Boolean(sidecarPlanMatches || scopedQueryStoreSidecar);
+  const blockingConflicts = conflicts.filter((field) => field !== "sqlHandle" || !sidecarOwnsSqlHandle);
   if (blockingConflicts.length) return { plan, warning: `Showplan identity conflicts with its result-row provenance for ${blockingConflicts.join(", ")}; SQL Evaluate did not merge the sidecar identity.` };
   const planSidecar = Object.fromEntries(fields.map((field) => [field, sidecar[field]]).filter(([, value]) => value !== null && value !== undefined && value !== ""));
   const embeddedIdentity = Object.fromEntries(Object.entries(current)
-    .filter(([field, value]) => value !== null && value !== undefined && value !== "" && !(field === "sqlHandle" && sidecarPlanMatches))) as PlanQueryIdentity;
+    .filter(([field, value]) => value !== null && value !== undefined && value !== "" && !(field === "sqlHandle" && sidecarOwnsSqlHandle))) as PlanQueryIdentity;
   const merged = { ...planSidecar, ...embeddedIdentity } as PlanQueryIdentity;
   return { plan: { ...plan, statements: statements.map((statement) => statement.id === target.id ? { ...statement, queryIdentity: merged } : statement) } };
 }

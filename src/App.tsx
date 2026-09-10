@@ -1,14 +1,23 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
-import type { AnalysisReport, AnalysisWorkerRequest, Finding, Severity, ThresholdProfile, WhoIsActiveRecord } from "./types";
+import type { AnalysisReport, Finding, Severity, ThresholdProfile, WhoIsActiveRecord } from "./types";
+import { CaseDetailsEditor } from "./components/CaseDetailsEditor";
+import { WorkflowDialog } from "./components/WorkflowDialog";
+import { ImportPreviewDialog } from "./components/ImportPreviewDialog";
+import type { PreviewState } from "./components/ImportPreviewDialog";
+import { useDocumentCheckpoint } from "./lib/useDocumentCheckpoint";
+import { updateCaseDetails } from "./deepAnalysis/metadata";
+import type { PreparedEvidenceBatch } from "./deepAnalysis/case";
+import type { PreviewWorkerRequest } from "./lib/preparedAnalysis";
 import { DropZone } from "./components/DropZone";
 import { DeepAnalysisWorkspace } from "./components/DeepAnalysisWorkspace";
+import { InvestigationHistoryWorkspace } from "./components/InvestigationHistoryWorkspace";
 import { FindingDrawer } from "./components/FindingDrawer";
 import { InvestigationGuide } from "./components/InvestigationGuide";
 import { SeverityBadge } from "./components/SeverityBadge";
 import { ThresholdProfileManager } from "./components/ThresholdProfileManager";
 import type { DeepAnalysisCase, EvidenceImportMessage } from "./deepAnalysis/types";
-import { addEvidenceFiles, chooseSpillPlanStatement, clearSpillPlanStatement, createDeepAnalysisCase, createDeepCaseArchive, createSpillTriageCase, openDeepCaseArchive, selectSpillCandidate } from "./deepAnalysis/case";
+import { prepareEvidenceFiles, commitEvidenceFiles, chooseSpillPlanStatement, clearSpillPlanStatement, createDeepAnalysisCase, createDeepCaseArchive, createSpillTriageCase, openDeepCaseArchive, selectSpillCandidate } from "./deepAnalysis/case";
 import { deepAnalysisProfileForFinding } from "./deepAnalysis/profile";
 import { downloadBlob, findingsCsv, printableReport, redactReport, validateReport } from "./lib/report";
 import { createRunArchive } from "./lib/runBundle";
@@ -85,6 +94,18 @@ function App() {
   const [activeProfile, setActiveProfile] = useState<ThresholdProfileEntry>(DEFAULT_THRESHOLD_PROFILE_ENTRY);
   const [profileWarnings, setProfileWarnings] = useState<string[]>([]);
   const [profileReady, setProfileReady] = useState(false);
+  const reportCheckpoint = useDocumentCheckpoint(report);
+  const caseCheckpoint = useDocumentCheckpoint(deepCase);
+  const [preview, setPreview] = useState<PreviewState | null>(null);
+  const [replacement, setReplacement] = useState<{ action(): void; report: boolean; deep: boolean } | null>(null);
+  const [guardBusy, setGuardBusy] = useState(false);
+  const requestId = useRef(0);
+  const pendingEvidence = useRef<PreparedEvidenceBatch | null>(null);
+  const chosenAnalysisIds = useRef<string[]>([]);
+  const incomingFiles = useRef<File[]>([]);
+  const sourceSheets = useRef(new Map<File, string>());
+  const busy = loading || deepBusy || savingRun || guardBusy;
+  const workflowLocked = busy || Boolean(preview) || Boolean(replacement);
   const profileStorageRef = useRef<Storage | null>(null);
   const workerRef = useRef<Worker | null>(null);
   const closeDrawer = useCallback(() => setSelected(null), []);
@@ -109,7 +130,29 @@ function App() {
     setActivityAscending(true);
   }, []);
 
-  useEffect(() => () => workerRef.current?.terminate(), []);
+  useEffect(() => () => { requestId.current++; workerRef.current?.terminate(); }, []);
+  useEffect(() => {
+    if (!reportCheckpoint.dirty && !caseCheckpoint.dirty) return;
+    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [reportCheckpoint.dirty, caseCheckpoint.dirty]);
+
+  function replaceWorkspace(action: () => void, replacesReport: boolean, replacesCase: boolean) {
+    const losesReport = replacesReport && reportCheckpoint.dirty;
+    const losesCase = replacesCase && caseCheckpoint.dirty;
+    if (losesReport || losesCase) setReplacement({ action, report: losesReport, deep: losesCase });
+    else action();
+  }
+
+  function cancelPreview() {
+    requestId.current++;
+    workerRef.current?.postMessage({ type: "discard", requestId: requestId.current } satisfies PreviewWorkerRequest);
+    workerRef.current?.terminate();
+    workerRef.current = null;
+    pendingEvidence.current = null;
+    setPreview(null); setLoading(false); setDeepBusy(false);
+  }
   useEffect(() => {
     let mounted = true;
     const storage = browserProfileStorage();
@@ -152,57 +195,118 @@ function App() {
   };
 
   async function openDeepCase(file: File) {
+    if (workflowLocked) return;
+    const token = ++requestId.current;
     setDeepBusy(true);
     try {
       const opened = await openDeepCaseArchive(file);
-      setDeepCase(opened.deepCase);
-      setDeepFiles(opened.files);
-      setSelected(null);
-      setErrors([]);
-      setUploadMessages([]);
-      setTab("deep");
+      if (token !== requestId.current) return;
+      replaceWorkspace(() => {
+        setDeepCase(opened.deepCase); caseCheckpoint.loaded(opened.deepCase);
+        setDeepFiles(opened.files); setSelected(null); setErrors([]); setUploadMessages([]); setTab("deep");
+      }, false, true);
     } catch (error) {
-      setErrors([`Deep Analysis case could not be opened: ${error instanceof Error ? error.message : "Unknown case error"}`]);
-    } finally {
-      setDeepBusy(false);
-    }
+      if (token === requestId.current) setErrors([`Deep Analysis case could not be opened: ${error instanceof Error ? error.message : "Unknown case error"}`]);
+    } finally { if (token === requestId.current) setDeepBusy(false); }
   }
 
-  const analyzeFiles = async (files: File[]) => {
-    if (!files.length) return;
-    setUploadMessages([]);
+  function prepareMain(files: File[], append = false, sheets: Record<string, string> = {}, selectedIds?: string[]) {
+    const token = ++requestId.current;
+    workerRef.current?.terminate();
+    const initial: PreviewState = { target: "analysis", files, append, sheets, selectedIds: selectedIds ?? [], items: [], busy: true };
+    setPreview(initial); setLoading(true); setProgress("Preparing import preview"); setErrors([]);
+    let worker: Worker;
+    try { worker = new Worker(new URL("./analysis.worker.ts", import.meta.url), { type: "module" }); }
+    catch (error) { setErrors([`Worker startup phase failed: ${error instanceof Error ? error.message : "Unavailable"}`]); setLoading(false); setPreview(null); return; }
+    workerRef.current = worker;
+    const fail = (messages: string[]) => {
+      if (token !== requestId.current) return;
+      setErrors(messages); setLoading(false); setPreview(null); worker.terminate(); workerRef.current = null;
+    };
+    worker.onerror = (event) => { event.preventDefault(); fail([`Worker failed: ${event.message || "Select the files again."}`]); };
+    worker.onmessageerror = () => fail(["Worker response could not be read. Select the files again."]);
+    let preparedSheets: Record<string, string> = {};
+    worker.onmessage = (event) => {
+      if (token !== requestId.current || event.data.requestId !== token) return;
+      if (event.data.type === "progress") setProgress(`Inspected ${event.data.fileName}`);
+      if (event.data.type === "prepared") {
+        preparedSheets = Object.fromEntries(event.data.previews.filter((item: { selectedSheet?: string }) => item.selectedSheet).map((item: { id: string; selectedSheet: string }) => [item.id, item.selectedSheet]));
+        setPreview({ ...initial, items: event.data.previews, busy: false, selectedIds: event.data.previews.filter((item: { usable: boolean; id: string }) => item.usable && (!selectedIds || selectedIds.includes(item.id))).map((item: { id: string }) => item.id) });
+        setLoading(false);
+      }
+      if (event.data.type === "complete") {
+        const result: AnalysisReport = event.data.report;
+        const keptFiles = chosenAnalysisIds.current.map((id) => files[Number(id)]);
+        const keptSheets = new Map<File, string>();
+        chosenAnalysisIds.current.forEach((id) => { const sheet = preparedSheets[id]; if (sheet) keptSheets.set(files[Number(id)], sheet); });
+        setPreview(null); setLoading(false); worker.terminate(); workerRef.current = null;
+        replaceWorkspace(() => {
+          setReport(result); reportCheckpoint.reset(); setReportImportedLegacy(false);
+          setSourceFiles(keptFiles); sourceSheets.current = keptSheets;
+          setDeepCase(null); caseCheckpoint.reset(); setDeepFiles([]); setErrors(event.data.errors);
+          setUploadMessages([]); resetReportView(); setTab("findings");
+        }, true, true);
+      }
+      if (event.data.type === "error") fail(event.data.errors);
+    };
+    try { worker.postMessage({ type: "prepare", requestId: token, files, sheets }); }
+    catch (error) { fail([`Worker input-transfer phase failed: ${error instanceof Error ? error.message : "Unavailable"}`]); }
+  }
+
+  const analyzeFiles = async (files: File[], append = false) => {
+    if (!files.length || workflowLocked) return;
     const caseFile = files.find((file) => file.name.toLowerCase().endsWith(".sqlevalcase.zip"));
     if (caseFile) {
       if (files.length !== 1) { setErrors(["Open a saved .sqlevalcase.zip by itself; other selected files were not analyzed."]); return; }
-      await openDeepCase(caseFile);
-      return;
+      await openDeepCase(caseFile); return;
     }
     const reportFile = files.find((file) => file.name.toLowerCase().endsWith(".sqleval.json"));
     if (reportFile) {
       if (files.length !== 1) { setErrors(["Open a saved .sqleval.json report by itself; other selected files were not analyzed."]); return; }
-      if (reportFile.size > 100 * 1024 * 1024) { setErrors([`${reportFile.name}: saved reports are limited to 100 MB.`]); return; }
-      try { const opened = await validateReport(JSON.parse(await reportFile.text())); setReport(opened.investigationGuide ? opened : { ...opened, investigationGuide: composeInvestigationGuideSafely(opened) }); setReportImportedLegacy(!opened.thresholdProfile); setSourceFiles([]); setDeepCase(null); setDeepFiles([]); setErrors([]); resetReportView(); setTab("findings"); }
-      catch (error) { setErrors([error instanceof Error ? error.message : "Report could not be opened."]); }
+      if (reportFile.size > 100 * 1024 * 1024) { setErrors(["Saved reports are limited to 100 MB."]); return; }
+      const token = ++requestId.current;
+      setLoading(true);
+      try {
+        const opened = await validateReport(JSON.parse(await reportFile.text()));
+        if (token !== requestId.current) return;
+        const next = opened.investigationGuide ? opened : { ...opened, investigationGuide: composeInvestigationGuideSafely(opened) };
+        replaceWorkspace(() => {
+          setReport(next); reportCheckpoint.loaded(next); setReportImportedLegacy(!opened.thresholdProfile);
+          setSourceFiles([]); sourceSheets.current.clear(); setDeepCase(null); caseCheckpoint.reset(); setDeepFiles([]);
+          setErrors([]); setUploadMessages([]); resetReportView(); setTab("findings");
+        }, true, true);
+      } catch (error) { if (token === requestId.current) setErrors([error instanceof Error ? error.message : "Report could not be opened."]); }
+      finally { if (token === requestId.current) setLoading(false); }
       return;
     }
-    setLoading(true); setProgress("Starting local analysis…"); setErrors([]);
-    workerRef.current?.terminate();
-    let worker: Worker;
-    try { worker = new Worker(new URL("./analysis.worker.ts", import.meta.url), { type: "module" }); }
-    catch (error) { setErrors([`Worker startup phase failed: ${error instanceof Error ? error.message : "The browser could not start local analysis."}`]); setLoading(false); setProgress(""); return; }
-    workerRef.current = worker;
-    let workerPhase = "starting the analysis worker";
-    worker.onmessage = (event) => {
-      if (event.data.type === "progress") { workerPhase = `processing ${event.data.fileName}`; setProgress(`Processed ${event.data.fileName}`); }
-      if (event.data.type === "complete") { setReport(event.data.report); setReportImportedLegacy(false); setSourceFiles([...files]); setDeepCase(null); setDeepFiles([]); setErrors(event.data.errors); setLoading(false); setProgress(""); resetReportView(); setTab("findings"); worker.terminate(); workerRef.current = null; }
-      if (event.data.type === "error") { setErrors(event.data.errors); setLoading(false); setProgress(""); worker.terminate(); workerRef.current = null; }
-    };
-    worker.onerror = (event) => { event.preventDefault(); setErrors([event.message ? `Worker failed while ${workerPhase}: ${event.message}` : `Worker stopped while ${workerPhase}. Refresh the page and retry; if it repeats, export the browser console error.`]); setLoading(false); setProgress(""); worker.terminate(); workerRef.current = null; };
-    worker.onmessageerror = () => { setErrors([`Worker response could not be read while ${workerPhase}. Refresh the page and retry.`]); setLoading(false); setProgress(""); worker.terminate(); workerRef.current = null; };
-    const request: AnalysisWorkerRequest = { files, thresholdProfile: activeProfile.snapshot };
-    try { worker.postMessage(request); }
-    catch (error) { setErrors([`Worker input-transfer phase failed: ${error instanceof Error ? error.message : "The selected files could not be passed to local analysis."}`]); setLoading(false); setProgress(""); worker.terminate(); workerRef.current = null; }
+    incomingFiles.current = files;
+    const combined = append && sourceFiles.length ? [...new Set([...sourceFiles, ...files])] : files;
+    prepareMain(combined, append && sourceFiles.length > 0, Object.fromEntries(combined.flatMap((file, index) => sourceSheets.current.has(file) ? [[String(index), sourceSheets.current.get(file)!]] : [])));
   };
+
+  function changePreview(next: PreviewState) {
+    if (!preview || preview.busy) return;
+    if (next.target === "analysis" && next.append !== preview.append) {
+      const chosen = next.append ? [...new Set([...sourceFiles, ...incomingFiles.current])] : incomingFiles.current;
+      const overrides = new Map(sourceSheets.current);
+      preview.files.forEach((file, index) => { const sheet = preview.sheets[String(index)] ?? preview.items.find((item) => item.id === String(index))?.selectedSheet; if (sheet) overrides.set(file, sheet); });
+      prepareMain(chosen, next.append, Object.fromEntries(chosen.flatMap((file, index) => overrides.has(file) ? [[String(index), overrides.get(file)!]] : [])));
+    } else setPreview(next);
+  }
+
+  function confirmPreview() {
+    if (!preview || preview.busy || !preview.selectedIds.length) return;
+    if (preview.target === "analysis") {
+      chosenAnalysisIds.current = [...preview.selectedIds];
+      setPreview({ ...preview, busy: true }); setLoading(true); setProgress("Analyzing selected evidence");
+      try { workerRef.current?.postMessage({ type: "analyze", requestId: requestId.current, selectedIds: preview.selectedIds, thresholdProfile: activeProfile.snapshot } satisfies PreviewWorkerRequest); }
+      catch (error) { cancelPreview(); setErrors([error instanceof Error ? error.message : "Analysis could not start."]); }
+    } else if (deepCase && pendingEvidence.current) {
+      const result = commitEvidenceFiles(deepCase, pendingEvidence.current, new Set(preview.selectedIds.map((id) => preview.files[Number(id)])));
+      setDeepCase(result.deepCase); setDeepFiles((current) => [...current, ...result.acceptedFiles]); setUploadMessages(result.messages);
+      setErrors([]); pendingEvidence.current = null; setPreview(null);
+    }
+  }
 
   const filtered = useMemo(() => {
     if (!report) return [];
@@ -271,98 +375,114 @@ function App() {
   }, []);
 
   const exportReport = (kind: "json" | "csv" | "html") => {
-    if (!report) return;
-    if (!report.thresholdProfile && !reportImportedLegacy) { setErrors((current) => [...current, "Export refused: the generated report has no resolved threshold profile."]); return; }
-    const output = rawExport ? report : redactReport(report);
-    if (kind === "json") downloadBlob("sql-evaluate-report.sqleval.json", JSON.stringify(output, null, 2), "application/json");
-    if (kind === "csv") downloadBlob("sql-evaluate-findings.csv", findingsCsv(output), "text/csv;charset=utf-8");
-    if (kind === "html") downloadBlob("sql-evaluate-report.html", printableReport(output), "text/html;charset=utf-8");
+    if (!report || busy) return false;
+    try {
+      if (!report.thresholdProfile && !reportImportedLegacy) throw new Error("Export refused: the generated report has no resolved threshold profile.");
+      const output = rawExport ? report : redactReport(report);
+      if (kind === "json") { downloadBlob("sql-evaluate-report.sqleval.json", JSON.stringify(output, null, 2), "application/json"); reportCheckpoint.downloaded(report); }
+      if (kind === "csv") downloadBlob("sql-evaluate-findings.csv", findingsCsv(output), "text/csv;charset=utf-8");
+      if (kind === "html") downloadBlob("sql-evaluate-report.html", printableReport(output), "text/html;charset=utf-8");
+      return true;
+    } catch (error) { setErrors([error instanceof Error ? error.message : "Export failed."]); return false; }
   };
 
   const saveRun = async () => {
-    if (!report || savingRun) return;
+    if (!report || savingRun) return false;
+    const snapshot = report;
     setSavingRun(true);
     try {
-      const archive = await createRunArchive(report, sourceFiles, { includeRaw: rawExport, processingErrors: errors, allowLegacyReport: reportImportedLegacy });
-      const archiveBytes = new Uint8Array(archive.bytes.byteLength);
-      archiveBytes.set(archive.bytes);
+      const archive = await createRunArchive(snapshot, sourceFiles, { includeRaw: rawExport, processingErrors: errors, allowLegacyReport: reportImportedLegacy });
+      const archiveBytes = new Uint8Array(archive.bytes.byteLength); archiveBytes.set(archive.bytes);
       downloadBlob(archive.fileName, archiveBytes.buffer, "application/zip");
+      reportCheckpoint.downloaded(snapshot);
+      return true;
     } catch (error) {
       setErrors((current) => [...current, `Run archive could not be created: ${error instanceof Error ? error.message : "Unknown export error"}`]);
-    } finally {
-      setSavingRun(false);
-    }
+      return false;
+    } finally { setSavingRun(false); }
   };
 
   const startDeepAnalysis = (finding: Finding) => {
-    if (!report) return;
+    if (!report || workflowLocked) return;
     try {
-      setDeepCase(createDeepAnalysisCase(report, finding));
-      setDeepFiles([]);
-      setErrors([]);
-      setUploadMessages([]);
-      setSelected(null);
-      setTab("deep");
-    } catch (error) {
-      setErrors([`Deep Analysis could not start: ${error instanceof Error ? error.message : "Unknown case error"}`]);
-    }
+      const next = createDeepAnalysisCase(report, finding);
+      replaceWorkspace(() => { setDeepCase(next); caseCheckpoint.reset(); setDeepFiles([]); setErrors([]); setUploadMessages([]); setSelected(null); setTab("deep"); }, false, true);
+    } catch (error) { setErrors([`Deep Analysis could not start: ${error instanceof Error ? error.message : "Unknown case error"}`]); }
   };
 
   const startSpillTriage = () => {
-    setDeepCase(createSpillTriageCase());
-    setDeepFiles([]);
-    setErrors([]);
-    setUploadMessages([]);
-    setSelected(null);
-    setTab("deep");
+    if (workflowLocked) return;
+    const next = createSpillTriageCase();
+    replaceWorkspace(() => { setDeepCase(next); caseCheckpoint.reset(); setDeepFiles([]); setErrors([]); setUploadMessages([]); setSelected(null); setTab("deep"); }, false, true);
   };
 
-  const selectDeepSpillCandidate = (candidateId: string) => setDeepCase((current) => current ? selectSpillCandidate(current, candidateId) : current);
-  const chooseDeepSpillPlan = (candidateId: string, artifactId: string, statementId: string) => setDeepCase((current) => current ? chooseSpillPlanStatement(current, candidateId, artifactId, statementId) : current);
-  const clearDeepSpillPlan = (candidateId: string) => setDeepCase((current) => current ? clearSpillPlanStatement(current, candidateId) : current);
+  const selectDeepSpillCandidate = (candidateId: string) => {
+    if (!workflowLocked) setDeepCase((current) => current && current.spillTriage?.selectedCandidateId !== candidateId ? selectSpillCandidate(current, candidateId) : current);
+  };
+  const chooseDeepSpillPlan = (candidateId: string, artifactId: string, statementId: string) => {
+    if (!workflowLocked) setDeepCase((current) => current ? chooseSpillPlanStatement(current, candidateId, artifactId, statementId) : current);
+  };
+  const clearDeepSpillPlan = (candidateId: string) => {
+    if (!workflowLocked) setDeepCase((current) => current?.spillTriage?.manualPlanSelections.some((item) => item.candidateId === candidateId) ? clearSpillPlanStatement(current, candidateId) : current);
+  };
 
   const importDeepEvidence = async (files: File[]) => {
-    if (!deepCase || !files.length) return;
+    if (!deepCase || !files.length || workflowLocked) return;
+    const token = ++requestId.current;
     setDeepBusy(true);
+    setPreview({ target: "deep", files, items: [], selectedIds: [], sheets: {}, append: true, busy: true });
     try {
-      const result = await addEvidenceFiles(deepCase, files);
-      setDeepCase(result.deepCase);
-      setDeepFiles((current) => [...current, ...result.acceptedFiles]);
-      setErrors([]);
-      setUploadMessages(result.messages);
+      const batch = await prepareEvidenceFiles(deepCase, files);
+      if (token !== requestId.current) return;
+      pendingEvidence.current = batch;
+      setPreview({ target: "deep", files, items: batch.previews, selectedIds: batch.previews.filter((item) => item.usable).map((item) => item.id), sheets: {}, append: true, busy: false });
     } catch (error) {
-      setUploadMessages([]);
-      setErrors([`Deep Analysis evidence could not be imported: ${error instanceof Error ? error.message : "Unknown evidence error"}`]);
-    } finally {
-      setDeepBusy(false);
-    }
+      if (token !== requestId.current) return;
+      setPreview(null); setErrors([`Deep Analysis evidence could not be inspected: ${error instanceof Error ? error.message : "Unknown error"}`]);
+    } finally { if (token === requestId.current) setDeepBusy(false); }
   };
 
   const saveDeepCase = async () => {
-    if (!deepCase || deepBusy) return;
-    if (!confirm("This working case may contain raw SQL, plans, identifiers, database names, and parameters. Save the sensitive case ZIP to a protected internal location?")) return;
+    if (!deepCase || deepBusy) return false;
+    if (!confirm("This working case may contain raw SQL, plans, identifiers, database names, parameters, and handwritten notes. Save the sensitive case ZIP to a protected internal location?")) return false;
+    const snapshot = deepCase;
     setDeepBusy(true);
     try {
-      const archive = await createDeepCaseArchive(deepCase, deepFiles);
+      const archive = await createDeepCaseArchive(snapshot, deepFiles);
       const bytes = new Uint8Array(archive.bytes.byteLength); bytes.set(archive.bytes);
       downloadBlob(archive.fileName, bytes.buffer, "application/zip");
+      caseCheckpoint.downloaded(snapshot);
+      return true;
     } catch (error) {
-      setErrors([`Deep Analysis case could not be saved: ${error instanceof Error ? error.message : "Unknown case export error"}`]);
-    } finally {
-      setDeepBusy(false);
-    }
+      setErrors([`Deep Analysis case could not be saved: ${error instanceof Error ? error.message : "Unknown case export error"}`]); return false;
+    } finally { setDeepBusy(false); }
+  };
+
+  const resolveReplacement = async (download: boolean) => {
+    if (!replacement || guardBusy) return;
+    const pending = replacement;
+    setGuardBusy(true);
+    try {
+      if (download && pending.report && !await saveRun()) { setReplacement(null); return; }
+      if (download && pending.deep && !await saveDeepCase()) { setReplacement(null); return; }
+      setReplacement(null); pending.action();
+    } finally { setGuardBusy(false); }
   };
 
   return <div className="app-shell">
     <header className="topbar"><div className="brand"><span className="brand-mark"><i /><i /><i /></span><div><strong>SQL Evaluate</strong><span>Activity &amp; plan triage</span></div></div><div className="privacy-chip"><span className="pulse" />LOCAL ONLY · 127.0.0.1</div></header>
-    <main>
+    <main inert={workflowLocked ? true : undefined}>
       <section className="hero"><div><div className="eyebrow">SQL SERVER DIAGNOSTIC CONSOLE</div><h1>Turn a capture into<br /><em>an investigation.</em></h1><p>Load <code>sp_WhoIsActive</code> output or a Showplan file. Your data stays in this browser session; findings show their evidence and limits.</p></div><div className="hero-grid" aria-hidden="true"><span>BLOCK</span><b>CHAIN</b><span>WAIT</span><b>TYPE</b><span>PLAN</span><b>XML</b></div></section>
-      <DropZone disabled={loading || !profileReady} onFiles={analyzeFiles} />
-      <input id="guide-evidence-input" hidden multiple type="file" accept=".csv,.tsv,.xlsx,.xls,.sqlplan,.xml" onChange={(event) => { const selectedFiles = [...event.target.files ?? []]; const combined = [...sourceFiles, ...selectedFiles].filter((file, index, all) => all.findIndex((candidate) => candidate.name === file.name && candidate.size === file.size && candidate.lastModified === file.lastModified) === index); void analyzeFiles(combined); event.target.value = ""; }} />
+      <DropZone disabled={workflowLocked || !profileReady} onFiles={analyzeFiles} />
+      <input id="guide-evidence-input" hidden multiple type="file" accept=".csv,.tsv,.xlsx,.xls,.sqlplan,.xml" onChange={(event) => { void analyzeFiles([...event.target.files ?? []], true); event.target.value = ""; }} />
+      <InvestigationHistoryWorkspace estimateThresholds={{ ratio: activeProfile.snapshot.thresholds.plans.mediumEstimateRatio, rows: activeProfile.snapshot.thresholds.plans.mediumRows }} />
       <ThresholdProfileManager entries={profileEntries} active={activeProfile} reportProfile={report?.thresholdProfile} ready={profileReady} warnings={profileWarnings} onActivate={activateProfile} onStore={storeProfile} onDelete={removeProfile} />
       {loading && <div className="processing"><span className="loader" /><div><strong>Analyzing locally</strong><p>{progress}</p></div></div>}
       {errors.length > 0 && <div className="error-panel"><strong>Some input could not be processed</strong>{errors.map((error) => <p key={error}>{error}</p>)}</div>}
       {uploadMessages.length > 0 && (!deepCase || deepCase.profileId !== "spill-triage") && <div className="upload-message-panel" role="status" aria-live="polite"><strong>Evidence import results</strong>{uploadMessages.map((item, index) => <p className={`upload-message-${item.severity}`} key={`${item.fileName}-${item.code}-${index}`}><b>{item.fileName}</b>: {item.message}</p>)}</div>}
+      {report && <div className="download-status" role="status"><strong>Report: {reportCheckpoint.label}</strong>{reportCheckpoint.downloadedAt && <p>Latest download prepared: {new Date(reportCheckpoint.downloadedAt).toLocaleString()}. Check your browser downloads. Original inputs are included only in a Run ZIP with raw details enabled.</p>}</div>}
+      {deepCase && <div className="download-status" role="status"><strong>Case: {caseCheckpoint.label}</strong>{caseCheckpoint.downloadedAt && <p>Latest download prepared: {new Date(caseCheckpoint.downloadedAt).toLocaleString()}. Check your browser downloads; disk storage cannot be confirmed here.</p>}</div>}
+      {deepCase && (tab === "deep" || !report) && <CaseDetailsEditor key={deepCase.id} deepCase={deepCase} onApply={(details) => setDeepCase((current) => current ? updateCaseDetails(current, details) : current)} />}
       {report && <>
         <section className="report-meta"><div><span>ANALYSIS / {new Date(report.createdAt).toLocaleDateString()}</span><strong>{report.inputs.map((input) => input.fileName).join(" + ")}</strong><small className="report-profile">{report.thresholdProfile ? `Profile ${report.thresholdProfile.id}@${report.thresholdProfile.version} · ${report.thresholdProfile.digest.slice(0, 12)}` : "Legacy report · threshold profile not recorded"}</small></div><div className="report-actions"><label className="raw-toggle"><input type="checkbox" checked={rawExport} onChange={(event) => { if (event.target.checked && !confirm("Raw exports and run archives may contain the original capture, SQL text, host names, logins, database names, and parameter values. Include them?")) return; setRawExport(event.target.checked); }} />Include raw details</label><button className="button button-save" disabled={savingRun} onClick={saveRun}>{savingRun ? "Preparing ZIP…" : "Save Run ZIP"}</button><button className="button" onClick={() => exportReport("json")}>JSON</button><button className="button" onClick={() => exportReport("csv")}>CSV</button><button className="button" onClick={() => exportReport("html")}>Print HTML</button></div></section>
         <section className="kpi-grid">
@@ -385,6 +505,12 @@ function App() {
       {deepCase && !report && <DeepAnalysisWorkspace deepCase={deepCase} recommendations={[]} busy={deepBusy} onStart={startDeepAnalysis} onStartSpillTriage={startSpillTriage} onSelectSpillCandidate={selectDeepSpillCandidate} onChooseSpillPlan={chooseDeepSpillPlan} onClearSpillPlan={clearDeepSpillPlan} onImport={importDeepEvidence} onSave={saveDeepCase} onOpen={openDeepCase} estimateThresholds={{ ratio: activeProfile.snapshot.thresholds.plans.mediumEstimateRatio, rows: activeProfile.snapshot.thresholds.plans.mediumRows }} importMessages={uploadMessages} />}
       {!report && !loading && !deepCase && <><section className="spill-launch"><div><span>FOCUSED WORKFLOW</span><strong>Have a sp_BlitzCache spill export?</strong><p>Rank its cached plan variants locally, then connect the highest-priority candidate to an uploaded execution plan.</p></div><button type="button" className="button button-primary" onClick={startSpillTriage}>Start Spill Triage</button></section><section className="trust-row"><div><span>01</span><strong>Private by construction</strong><p>No telemetry, uploads, database connection, or automatic remediation.</p></div><div><span>02</span><strong>Evidence before advice</strong><p>Severity and confidence are separate; missing data stays missing.</p></div><div><span>03</span><strong>Built for handoff</strong><p>Export a redacted report with evidence and source links.</p></div></section></>}
     </main>
+    {preview && <ImportPreviewDialog preview={preview} canAppend={sourceFiles.length > 0} caseTitle={deepCase?.title} onChange={changePreview} onSheet={(id, sheet) => prepareMain(preview.files, preview.append, { ...preview.sheets, [id]: sheet }, preview.selectedIds)} onConfirm={confirmPreview} onCancel={cancelPreview} />}
+    {replacement && <WorkflowDialog title="Protect unfinished work" onCancel={() => { if (!guardBusy) setReplacement(null); }}>
+      <p>The {replacement.report && replacement.deep ? "report and working case have" : replacement.report ? "report has" : "working case has"} changes that have not been downloaded. Continuing will replace this work.</p>
+      <p>A report Run ZIP follows the current raw-details choice. A working-case ZIP contains sensitive evidence and handwritten notes. Download preparation does not confirm disk storage.</p>
+      <div className="workflow-actions"><button className="button" disabled={guardBusy} onClick={() => setReplacement(null)}>Cancel</button><button className="button" disabled={guardBusy} onClick={() => void resolveReplacement(false)}>Discard and continue</button><button className="button button-primary" disabled={guardBusy} onClick={() => void resolveReplacement(true)}>{guardBusy ? "Preparing downloads…" : "Download and continue"}</button></div>
+    </WorkflowDialog>}
     <footer><span>SQL EVALUATE / OFFLINE TRIAGE / v{APP_VERSION}</span><p>Recommendations are advisory. Validate against workload context.</p></footer>
     <FindingDrawer finding={selected} guideStep={selectedGuideStep} relatedFindings={relatedFindings} onSelectFinding={setSelected} onDeepAnalysis={startDeepAnalysis} onShowActivity={showAffectedActivity} onShowGuide={showInvestigationGuide} onClose={closeDrawer} />
   </div>;

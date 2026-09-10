@@ -26,6 +26,16 @@ Capture files are limited to 100 MB and plan files to 25 MB. Unknown future colu
 
 Duplicate capture headers are preserved with numbered suffixes and reported as an input warning. Text values such as `NULL` are normalized to missing values for calculations while the original imported values remain available in authorized raw exports.
 
+## Import preview and unfinished work
+
+Fresh captures, plans, and Deep Analysis evidence open a local preview before they are applied. Review file warnings, timestamps, recognized evidence, and worksheets; uncheck files to exclude them. For activity workbooks, choose another recognizable worksheet if needed. Deep Analysis inspects all sheets as before.
+
+Choose **New analysis** or **Add to current analysis** when original capture files remain in this browser session. Reopened redacted reports require the original captures to be selected again. Opening saved reports and cases uses their dedicated validation flow.
+
+Reports and cases show their download state. Replacing unfinished work offers **Download and continue**, **Discard and continue**, or **Cancel**. Leaving or reloading warns while changes remain. **Download prepared** means a download was initiated; check browser downloads because SQL Evaluate cannot verify disk storage. A report JSON or Run ZIP checkpoints the report. Only a working-case ZIP checkpoints a case; redacted case exports do not.
+
+Use **Edit case details** to set the title, ticket reference, plain-text notes, and Investigating / Waiting for evidence / Closed status. These are human tracking fields, not diagnostic findings. Handwritten fields are saved only in the sensitive working-case ZIP and omitted from redacted handoffs. Schema 1.5 cases require the updated app; older schemas 1.0–1.4 continue to open.
+
 ## Guided investigation
 
 Consequential reports show a case-level **Start here** guide above the finding list. It summarizes the last observed state, the most important evidence gap, and one primary action; up to four follow-up steps remain collapsed until requested. Each step discloses when it applies, the evidence it should produce, collection cautions, and links to its source findings. Commands are copied for manual DBA review onlyâ€”SQL Evaluate never executes them.
@@ -52,13 +62,15 @@ The bundled diagnostic catalog covers supported First Responder Kit procedures, 
 
 Use **Save Case ZIP** to preserve the case, imported evidence, file hashes, event history, identity correlation, plan-capture attempts, and current evidence states without a database. A `.sqlevalcase.zip` is a sensitive working archive and is not redacted; store it only in an access-controlled internal location. Deep Analysis can also export redacted JSON, assertion CSV, and printable HTML for handoff. Those handoffs are built from a separate allowlist, omit raw evidence and stable identifiers, and cannot be reopened as working cases.
 
+Use **Investigation History** to import multiple sensitive case archives and count recurring row-estimate, spill, conversion, predicate, and statistics observations by server and portable database object. History remains in memory until explicitly saved as `.sqlevalhistory.zip`; SQL Evaluate does not retain it in browser storage. A server capability snapshot is required before a case contributes to recurrence totals. Statistics maintenance remains operator-reviewed: run and import the generated read-only verification first, then use the guarded Ola Hallengren preview, which defaults to `@Execute = 'N'` and performs no index rebuild or reorganization.
+
 ### Spill Triage
 
 Start Spill Triage from the landing page, Deep Analysis, or a runtime spill finding. Import a CSV/XLSX `sp_BlitzCache` result produced with `@SortOrder = 'Spills'`; SQL Evaluate ranks only rows with valid positive spill metrics. The default order is total 8 KB spill pages, average spill pages per execution, last execution, then source row. A separate callout keeps the highest per-execution spiller visible when it differs from the highest cumulative spiller.
 
 The imported row count may be a bounded `@Top` result. Ten rows do not prove that only ten plans spilled. Different plan handles remain separate even when their query hash is the same. Upload a cached or actual Showplan to continue: correlation requires stable SQL Server identity, Query Store IDs require matching database context for an exact match, and similar SQL text never establishes a match. If multiple statements have the same strongest non-conflicting identity, SQL Evaluate blocks automatic correlation and offers a reversible manual choice. Cached/estimated plans provide compile-time shape only; runtime spill pages, grants, operator counts, and upstream estimate errors are shown only from actual-plan evidence.
 
-When a `.sqlplan` omits stable identity, use the **Cached plan with stable provenance** ladder step. Its CSV/XLSX result keeps `query_plan`, plan and SQL handles, paired hashes, statement offsets, and database ID in the same row. SQL Evaluate can attach that sidecar identity to one unambiguous Showplan statement; conflicting identity is preserved as a warning and never overwritten.
+When a `.sqlplan` omits stable identity, use the **Cached plan with stable provenance** ladder step. Its CSV/XLSX result keeps `query_plan`, plan and SQL handles, paired hashes, statement offsets, and database ID in the same row. SQL Evaluate can attach that sidecar identity to one unambiguous Showplan statement; conflicting identity is preserved as a warning and never overwritten. When validated Query Store sidecar IDs are present, an embedded Showplan statement `sql_handle` is not treated as a plan-cache handle.
 
 `Remove Plan Handle From Cache` values are retained only behind an administrative-source warning. They are not recommended remediation, have no one-click action, and are never executed by SQL Evaluate.
 

@@ -1,6 +1,46 @@
 # Changelog
 
+## 1.6.0 - 2026-09-07
+
+### Added
+
+- Added a sensitive, portable Investigation History archive for cross-case recurrence analysis without hidden browser persistence.
+- Added structured Showplan database, table, index, and optimizer-statistics identity.
+- Added server-specific statistics verification and multi-server Ola Hallengren report-only previews.
+
+### Safety
+
+- Recurrence is described as repeated observation rather than proof of cause.
+- Ola previews require imported server verification, perform statistics-only selection, and default to `@Execute = 'N'`.
+
 All notable changes to SQL Evaluate are documented here.
+
+## 1.5.1 - 2026-09-07
+
+### Fixed
+
+- A Query Store sidecar with validated database, query, and plan identity no longer treats an embedded Showplan statement `sql_handle` as a plan-cache identity. A contradictory plan handle still blocks automatic correlation.
+- Spill Triage now prefers actual-plan evidence, then cached/estimated evidence, then retained compile-only Query Store evidence when stable identities agree. Equal-strength evidence of the same kind remains explicitly ambiguous.
+
+### Verified
+
+- 304 automated tests passed with 1 intentional skip; the production build passed.
+- The guarded local live-lab campaign passed all 13 browser and evidence checks without browser console errors.
+
+## 1.5.0 — 2026-09-05
+
+### Added
+
+- Review-before-import workflows for captures/plans and Deep Analysis evidence, with file exclusion and main-analysis worksheet selection.
+- Report/case download checkpoints, unfinished-work replacement choices, and leave/reload warnings.
+- Private case title, ticket reference, notes, and human workflow status, retained in schema 1.5 working archives.
+- Backward-compatible opening of case schemas 1.0–1.4, preserving evidence and manual plan choices.
+
+### Privacy and behavior
+
+- Redacted handoffs omit handwritten case fields; download preparation never claims verified disk storage.
+- Original session worksheet choices survive additional analysis. Cancelled previews and duplicate-only evidence batches leave cases unchanged.
+- Diagnostic thresholds and offline-only runtime boundaries are unchanged.
 
 ## 1.4.2 — 2026-09-03
 

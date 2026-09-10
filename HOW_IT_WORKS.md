@@ -39,6 +39,22 @@ Capture files are limited to 100 MB. Plan files are limited to 25 MB.
 
 For example, a fictional test row for session `501` with a long `LCK_M_X` wait may be shown as a locking-wait finding. The result is based on the captured values and the documented rule thresholds; it is not an instruction to kill session `501`.
 
+## Review files before applying them
+
+Fresh uploads open **Review imported files**. Inspect the detected type, row or statement count, supplied capture timestamps, worksheets, recognized evidence, and warnings. Uncheck files you do not want to include. Activity workbooks let you correct the selected worksheet; Deep Analysis continues to inspect all workbook sheets.
+
+Choose **New analysis** to replace the current report, or **Add to current analysis** when original captures remain in the session. Guided uploads default to adding. Original captures must be selected again when continuing from a redacted report. Cancel closes the preview and preserves current work.
+
+## Track and protect an investigation
+
+**Edit case details** records a case title, ticket reference, notes, and status. Applying changes updates the working case. Status is a human label; even a Closed case can receive new evidence and may still contain unresolved findings.
+
+Handwritten details are included only in the sensitive working-case ZIP. Redacted handoffs omit them. Case schemas 1.0–1.4 open with default tracking fields; newly saved schema 1.5 cases require SQL Evaluate 1.5.0 or later.
+
+Download indicators distinguish work not yet downloaded, changes since the last download, and a prepared download. Before replacing unfinished work, choose Download and continue, Discard and continue, or Cancel. Browser leave/reload warnings also protect unfinished work; they are not crash recovery or automatic storage.
+
+Check that downloads completed before closing the app. SQL Evaluate can initiate a download but cannot confirm its disk location. Report JSON and Run ZIP downloads checkpoint the report; only Save case ZIP checkpoints the working case. Redacted case handoffs do not preserve the editable investigation.
+
 ## What the analysis evaluates
 
 Depending on which columns are present, SQL Evaluate can evaluate:
@@ -108,7 +124,7 @@ Deep Analysis correlates sources only through stable SQL Server identifiers and 
 3. Review the top-N warning and candidate Data Quality details. Warning-only, zero, and malformed rows remain visible but unranked.
 4. Compare cumulative 8 KB spill pages with average pages per execution. The default ranking is total pages, average pages, last execution, and source row; CPU, duration, and reads are context rather than a synthetic score.
 5. Select a candidate and upload a cached or actual Showplan when no unique stable-identity match is present. Query Store identity is database-scoped; a conflicting database blocks the match. If two statements share the same strongest non-conflicting identity, choose one explicitly or import statement offsets, and clear the choice if it cannot be verified.
-6. Treat a cached plan as compile-time evidence. Only an actual plan can show runtime spilling operators, node IDs, pages read/written, grant use, and the earliest major row-estimate error feeding the spill.
+6. Treat a cached plan as compile-time evidence. Only an actual plan can show runtime spilling operators, node IDs, pages read/written, grant use, and the earliest major row-estimate error feeding the spill. A validated Query Store sidecar can supply identity for a Showplan statement; its embedded statement `sql_handle` is not assumed to be a plan-cache handle.
 
 An export with ten rows is consistent with `@Top = 10`, not proof that ten is the full population. A missing plan may have expired from cache, but SQL Evaluate cannot establish that offline. Byte-identical evidence is accepted once, explicit non-page units are converted to 8 KB pages, and a cell unit that contradicts its column unit is rejected rather than guessed. Cache-removal command text is administrative provenance, never a recommended next action.
 
@@ -145,7 +161,13 @@ SQL-Evaluate-v<version>/
   SHA256SUMS.txt
 ```
 
-The release package does not include SQL captures, execution plans, saved run archives, test fixtures, source code, `node_modules`, QA screenshots, or development work files.
+The release package does not include SQL captures, execution plans, saved run or history archives, test fixtures, source code, `node_modules`, QA screenshots, or development work files.
+
+## Investigation History
+
+Investigation History imports verified working-case archives locally and stores only derived target, capture, issue, and provenance records in a separate sensitive ZIP. Server-specific identity prevents unrelated servers from being merged, while a portable database/schema/table/index identity supports cross-server rollups. Counts use distinct captures and state the applicable denominator; an index associated with a poor estimate is not described as the cause without separate evidence.
+
+For a selected target, SQL Evaluate can generate a read-only statistics verification query that is run manually on each intended server. Imported results must confirm the target and a compatible Ola Hallengren installation before a statistics-only preview becomes available. The preview carries a verified multi-server mapping, aborts on unknown servers or missing objects, disables fragmentation actions, and explicitly passes `@Execute = 'N'`.
 
 Use `tools/package-release.ps1` from the development project to build the release ZIP. The script generates file checksums inside the package and a separate SHA-256 value for the ZIP.
 

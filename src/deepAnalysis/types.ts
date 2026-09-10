@@ -160,7 +160,7 @@ export interface ServerCapabilitySnapshot {
 
 export interface DeepCaseEvent {
   occurredAt: string;
-  type: "Case created" | "Evidence imported" | "Case reopened";
+  type: "Case created" | "Evidence imported" | "Case reopened" | "Case details changed";
   summary: string;
 }
 
@@ -258,13 +258,25 @@ export type DeepCaseOrigin =
   | { kind: "finding"; finding: DeepSourceFinding }
   | { kind: "manual"; label: string };
 
+export type CaseStatus = "Investigating" | "Waiting for evidence" | "Closed";
+
+export interface CaseDetails {
+  title: string;
+  ticketReference: string;
+  notes: string;
+  status: CaseStatus;
+}
+
 export interface DeepAnalysisCase {
-  schemaVersion: "1.0" | "1.1" | "1.2" | "1.3" | "1.4";
+  schemaVersion: "1.0" | "1.1" | "1.2" | "1.3" | "1.4" | "1.5" | "1.6";
   id: string;
   profileId: DeepProfileId;
   title: string;
   createdAt: string;
   updatedAt: string;
+  ticketReference?: string;
+  notes?: string;
+  status?: CaseStatus;
   sourceReportCreatedAt: string;
   sourceFileNames: string[];
   sourceFinding?: DeepSourceFinding;
@@ -292,7 +304,7 @@ export interface DeepAnalysisCase {
 }
 
 export interface DeepCaseArchiveManifest {
-  schemaVersion: "1.0" | "1.1" | "1.2" | "1.3" | "1.4";
+  schemaVersion: "1.0" | "1.1" | "1.2" | "1.3" | "1.4" | "1.5" | "1.6";
   caseId: string;
   appVersion: string;
   exportedAt: string;

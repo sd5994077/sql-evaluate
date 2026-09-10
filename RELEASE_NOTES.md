@@ -1,3 +1,35 @@
+# SQL Evaluate 1.6.0 - 2026-09-07
+
+Version 1.6.0 adds a portable Investigation History workspace for recurring row-estimate and statistics observations across sensitive case archives. It also adds structured Showplan object/statistics identity, server-specific verification, and a reusable multi-server Ola Hallengren preview that defaults to report-only mode.
+
+SQL Evaluate remains offline and file-only. It does not connect to SQL Server, execute generated SQL, silently retain history, or treat recurrence as proof of root cause.
+
+# SQL Evaluate 1.5.1
+
+Release date: 2026-09-07
+
+## Plan-evidence correlation fixes
+
+- A validated Query Store sidecar no longer lets an embedded Showplan statement `sql_handle` override its database/query/plan provenance. A contradictory plan handle still blocks automatic correlation.
+- Spill Triage uses actual-plan evidence before cached/estimated evidence, and cached/estimated evidence before retained compile-only Query Store evidence, when stable identities agree. Equal-strength evidence of the same kind remains an explicit ambiguity.
+- Verified with 304 automated tests passing, one intentional skip, a passing production build, and 13 passing guarded live-lab browser checks with no browser console errors.
+
+# SQL Evaluate 1.5.0
+
+Release date: 2026-09-05
+
+## Safer investigation workflows
+
+- Preview fresh captures, plans, and Deep Analysis evidence before applying them. Review recognized evidence, available timestamps, worksheets, and file-specific warnings; exclude files and correct the main activity worksheet.
+- Choose a new analysis or add to the current analysis when original inputs remain in the session. Confirmed analysis uses the prepared data and preserves worksheet choices.
+- Protect reports and working cases with download-state indicators, replacement choices, and browser leave warnings. Failed or cancelled downloads preserve current work.
+- Edit case title, ticket reference, notes, and Investigating / Waiting for evidence / Closed status. Human tracking does not change diagnostic conclusions.
+- Working-case schema 1.5 retains private tracking fields. Schemas 1.0–1.4 still open with defaults. Use SQL Evaluate 1.5.0 or later to open newly saved cases.
+- Handwritten title, ticket reference, and notes stay in sensitive working-case ZIPs and are omitted from redacted handoffs.
+- Download prepared means the browser download was initiated, not that disk storage was verified. Check browser downloads before closing the app.
+
+SQL Evaluate remains standalone and file-only. No database connection, command execution, telemetry, or AI integration was added.
+
 # SQL Evaluate 1.4.2
 
 Release date: 2026-09-03

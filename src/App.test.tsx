@@ -92,10 +92,14 @@ describe("analysis navigation", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Start Spill Triage" }));
     const evidenceInput = container.querySelector<HTMLInputElement>('[data-testid="spill-triage-evidence-input"]')!;
     fireEvent.change(evidenceInput, { target: { files: [new File(["Total Spills,Plan Handle\n100,0xAAA\n"], "blitz-spills.csv", { type: "text/csv" })] } });
+    await waitFor(() => expect((screen.getByRole("button", { name: "Import selected evidence" }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByRole("button", { name: "Import selected evidence" }));
     expect(await screen.findByRole("button", { name: "Choose matching plan" })).toBeTruthy();
 
     fireEvent.change(evidenceInput, { target: { files: [new File(["not a Showplan"], "blitzcache-plan.sqlplan", { type: "application/xml" })] } });
 
+    await waitFor(() => expect((screen.getByRole("button", { name: "Import selected evidence" }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByRole("button", { name: "Import selected evidence" }));
     const error = await screen.findByRole("alert", { name: /error: plan import failed/i });
     expect(within(error).getByText(/blitzcache-plan\.sqlplan/i)).toBeTruthy();
   });
@@ -107,7 +111,8 @@ describe("analysis navigation", () => {
 
     fireEvent.change(evidenceInput, { target: { files: [new File([], "empty-blitzcache.csv", { type: "text/csv" })] } });
 
-    const error = await screen.findByRole("alert", { name: /error: evidence import results/i });
+    const error = await screen.findByRole("dialog", { name: "Review imported files" });
+    await within(error).findByText(/file is empty and was not imported/i);
     expect(within(error).getByText(/empty-blitzcache\.csv/i)).toBeTruthy();
     expect(within(error).getByText(/file is empty and was not imported/i)).toBeTruthy();
   });
@@ -274,7 +279,11 @@ describe("analysis navigation", () => {
       onmessage: ((event: MessageEvent) => void) | null = null;
       onerror: ((event: ErrorEvent) => void) | null = null;
       onmessageerror: (() => void) | null = null;
-      postMessage(value: unknown) { posted = value; }
+      postMessage(value: unknown) {
+        posted = value;
+        const request = value as { type: string; requestId: number };
+        if (request.type === "prepare") queueMicrotask(() => this.onmessage?.({ data: { type: "prepared", requestId: request.requestId, previews: [{ id: "0", fileName: "capture.csv", size: 10, kind: "Activity capture", usable: true, count: 1, countLabel: "rows", worksheets: [], recognized: ["session_id"], missing: [], warnings: [], firstCapturedAt: null, lastCapturedAt: null }] } } as MessageEvent));
+      }
       terminate() { /* no-op */ }
     }
     vi.stubGlobal("Worker", FakeWorker);
@@ -287,6 +296,7 @@ describe("analysis navigation", () => {
     const captureInput = container.querySelector<HTMLInputElement>('input[type="file"][multiple]')!;
     fireEvent.change(captureInput, { target: { files: [new File(["session_id\n51\n"], "capture.csv", { type: "text/csv" })] } });
     await waitFor(() => expect(posted).toBeTruthy());
+    fireEvent.click(await screen.findByRole("button", { name: "Analyze selected files" }));
     expect((posted as { thresholdProfile: { id: string; digest: string } }).thresholdProfile).toMatchObject({ id: "dba.worker", digest: expect.stringMatching(/^[a-f0-9]{64}$/) });
   });
 });

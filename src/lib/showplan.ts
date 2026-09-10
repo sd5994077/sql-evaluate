@@ -158,6 +158,14 @@ function parseOperators(statement: XmlElement): PlanOperator[] {
       estimatedCost: numberAttr(relop, "EstimatedTotalSubtreeCost"),
       warnings: [...new Set(warnings)],
       objectName: object ? [attr(object, "Schema"), attr(object, "Table"), attr(object, "Index")].filter(Boolean).join(".") : undefined,
+      objectIdentity: object ? {
+        server: attr(object, "Server"),
+        database: attr(object, "Database"),
+        schema: attr(object, "Schema"),
+        table: attr(object, "Table"),
+        index: attr(object, "Index"),
+        kind: attr(object, "IndexKind"),
+      } : undefined,
       predicate,
       seekPredicate,
       residualPredicate,
@@ -195,6 +203,15 @@ function parseStatement(statement: XmlElement, documentWarnings: string[], state
   const text = attr(statement, "StatementText") ?? "";
   const isActual = operators.some((operator) => operator.actualRows !== null) || elements(statement, "RunTimeInformation").length > 0;
   const warnings = [...new Set([...statementWarnings, ...operators.flatMap((operator) => operator.warnings)])];
+  const statisticsUsage = elements(statement, "StatisticsInfo").map((item) => ({
+    database: attr(item, "Database"),
+    schema: attr(item, "Schema"),
+    table: attr(item, "Table"),
+    statistics: attr(item, "Statistics"),
+    modificationCount: numberAttr(item, "ModificationCount"),
+    samplingPercent: numberAttr(item, "SamplingPercent"),
+    lastUpdate: attr(item, "LastUpdate"),
+  }));
   return {
     id: statementId,
     statementText: text,
@@ -209,6 +226,7 @@ function parseStatement(statement: XmlElement, documentWarnings: string[], state
     } : undefined,
     operators,
     warnings,
+    statisticsUsage,
     queryIdentity: {
       sqlHandle: attr(statement, "SqlHandle") ?? attr(statement, "StatementSqlHandle"),
       planHandle: attr(statement, "PlanHandle"),

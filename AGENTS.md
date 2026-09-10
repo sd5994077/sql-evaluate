@@ -1,5 +1,9 @@
 # Agent Guidance
 
+## Current-task handoff
+
+- Before resuming an unfinished task, read `NEXT_STEPS.md` when it exists. Treat it as the current operator handoff and remove it only after the listed work is completed or superseded.
+
 ## Model routing
 
 - Use the current/default model for normal work. Model choice must not block progress.
@@ -17,6 +21,18 @@
 - Small internal coding changes with no user-visible behavior, such as tests, comments, documentation-only edits, or refactoring, may keep the current version unless they are being released independently.
 - Keep canonical version sources, package metadata and lockfiles, changelog or release notes, archive names, and checksums consistent with the chosen version.
 - Preserve older numbered release artifacts unless the user explicitly asks to remove them.
+
+## Git hygiene
+
+This policy applies before any agent or contributor uses Git in this repository, including status, branching, committing, merging, rebasing, pulling, pushing, or preparing a handoff.
+
+- Begin by running `git status --short`. Treat every modified or untracked path as active work until its owner and purpose are known.
+- Do not alter, stage, commit, discard, move, or reformat changes outside the declared task scope. Never use destructive Git commands unless the repository owner explicitly approves them.
+- Use one branch for one cohesive outcome. Do not mix feature work, fixes, release packaging, experiments, formatting, or unrelated documentation on the same branch.
+- Create a task branch from an approved, verified base before starting new feature or fix work. Use descriptive names such as `feature/investigation-history` or `fix/import-input-contract`.
+- Keep commits atomic and use a consistent conventional prefix: `feat:`, `fix:`, `docs:`, `test:`, or `chore:`. Do not create a commit unless the owner requests one.
+- Before a handoff, merge request, or push, confirm the intended diff, rerun the checks appropriate to the change, and report any remaining untracked files or known warnings.
+- Keep local screenshots, scratch patches, captures, exports, and secrets out of source control. Add only stable local-artifact patterns to `.gitignore`; do not ignore source, tests, documentation, or release artifacts merely to make the tree appear clean.
 
 ## SQL Server diagnostic guidance
 

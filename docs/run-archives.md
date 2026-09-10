@@ -1,5 +1,11 @@
 # Run archives
 
+## Investigation History archives
+
+An Investigation History archive uses the `.sqlevalhistory.zip` suffix and schema `1.0`. It contains a hash-verified derived history document and manifest, not imported case archives or their raw plans. The file is still sensitive because server, database, schema, table, index, and statistics names are retained. History is never stored automatically in browser storage.
+
+Deep Analysis case schema `1.6` retains structured plan object and optimizer-statistics identity. Case schemas `1.0` through `1.5` remain supported and are re-inspected from verified evidence when opened.
+
 SQL Evaluate can save each completed analysis as a ZIP file. This is the current persistence method; the application does not write to a database or upload results to a service.
 
 ## File name
@@ -52,7 +58,7 @@ The browser downloads the ZIP but does not delete older files automatically.
 
 ## Deep Analysis working cases and handoffs
 
-Deep Analysis uses a separate `.sqlevalcase.zip` format for reopenable working cases. It may contain raw source files, SQL text, plan XML, stable identifiers, database/object names, and manual Spill Triage statement selections, so it must be treated as sensitive. Case schema 1.3 revalidates a saved manual selection against the current evidence when the case is opened.
+Deep Analysis uses a separate `.sqlevalcase.zip` format for reopenable working cases. It may contain raw source files, SQL text, plan XML, stable identifiers, database/object names, and manual Spill Triage statement selections, so it must be treated as sensitive. Case schema 1.5 retains private case tracking fields and revalidates a saved manual selection against the current evidence when the case is opened. Schemas 1.0 through 1.4 remain supported for opening.
 
 The Deep Analysis **JSON**, **CSV**, and **Print HTML** actions produce non-reopenable handoff reports from an explicit allowlist. They exclude source names, raw values, SQL, plan XML, identities and hashes, database/object names, administrative source text, and unknown columns. Use these handoffs for wider sharing; use the working-case ZIP only when the recipient is authorized to receive the underlying evidence.
 

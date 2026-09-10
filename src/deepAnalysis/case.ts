@@ -1,5 +1,8 @@
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
 import type { AnalysisReport, Finding, PlanDocument, PlanQueryIdentity, PlanSourceKind } from "../types";
+import { captureRange } from "../lib/importPreview";
+import type { ImportPreviewItem } from "../lib/importPreview";
+import { validateCaseDetails } from "./metadata";
 import { APP_VERSION } from "../version";
 import { decodeText, parseCsv } from "../lib/csv";
 import { identityFromRow, inspectEvidenceMatrix, normalizeEvidenceHeader } from "./adapters";
@@ -73,7 +76,8 @@ export function createCpuBlockingCase(report: AnalysisReport, finding: Finding, 
   const hasOpenTransaction = (context.openTransactionCount ?? 0) > 0;
   const relatedTimes = report.records.filter((record) => finding.affectedRecordIds.includes(record.id)).map((record) => record.collectionTime).filter((value): value is string => Boolean(value)).sort();
   const base: DeepAnalysisCase = {
-    schemaVersion: "1.4",
+    schemaVersion: "1.5",
+    status: "Investigating", ticketReference: "", notes: "",
     id,
     profileId: CPU_BACKED_BLOCKING_PROFILE.id,
     title: `CPU-backed blocking / SPID ${context.headBlockerSessionId}`,
@@ -264,7 +268,8 @@ FROM sys.dm_exec_cached_plans;`;
 
 export function createSpillTriageCase(createdAt = new Date().toISOString(), id = caseId()): DeepAnalysisCase {
   const base: DeepAnalysisCase = {
-    schemaVersion: "1.4",
+    schemaVersion: "1.5",
+    status: "Investigating", ticketReference: "", notes: "",
     id,
     profileId: "spill-triage",
     title: "Spill Triage",
@@ -371,7 +376,7 @@ export function createDeepAnalysisCase(report: AnalysisReport, finding: Finding,
     requiresApproval: true,
   }] : [{ id: `${profileId}-capture`, title: `Collect ${profileLabel(profileId).toLowerCase()} evidence`, purpose: "Import the bounded evidence needed to support or contradict the working theory.", command: genericCollectionCommand(profileId, rootSessionId), requiredPermissions: ["VIEW SERVER STATE or VIEW SERVER PERFORMANCE STATE as applicable"], expectedEvidence: assertions.flatMap((item) => item.missingEvidence).slice(0, 8), supportedVersions: "SQL Server 2016 and later; permissions vary by version.", overhead: "Low", caution: "Run briefly under approved production-access procedures. SQL Evaluate never executes this script.", status: "Pending", artifactIds: [], executionMode: "Read-only" }];
   const base: DeepAnalysisCase = {
-    schemaVersion: "1.4", id, profileId, title: `${profileLabel(profileId)}${rootSessionId ? ` / SPID ${rootSessionId}` : ""}`, createdAt, updatedAt: createdAt,
+    schemaVersion: "1.5", status: "Investigating", ticketReference: "", notes: "", id, profileId, title: `${profileLabel(profileId)}${rootSessionId ? ` / SPID ${rootSessionId}` : ""}`, createdAt, updatedAt: createdAt,
     sourceReportCreatedAt: report.createdAt, sourceFileNames: report.inputs.map((input) => input.fileName),
     sourceFinding: { id: finding.id, ruleId: finding.ruleId, severity: finding.severity, confidence: finding.confidence, category: finding.category, title: finding.title, summary: finding.summary, evidence: finding.evidence, blockingContext: finding.blockingContext },
     origin: { kind: "finding", finding: { id: finding.id, ruleId: finding.ruleId, severity: finding.severity, confidence: finding.confidence, category: finding.category, title: finding.title, summary: finding.summary, evidence: finding.evidence, blockingContext: finding.blockingContext } },
@@ -395,6 +400,9 @@ async function sha256File(file: File): Promise<string> {
 }
 
 interface InspectedEvidence {
+  worksheets: string[];
+  rowCount: number;
+  recognizedHeaders: string[];
   artifact: DeepCaseArtifact;
   observations: DeepEvidenceObservation[];
   spillCandidates: SpillCandidate[];
@@ -494,7 +502,12 @@ async function inspectEvidenceFile(file: File, rootSessionId: number | null, imp
   const capabilitySnapshots: ServerCapabilitySnapshot[] = [];
   const messages: EvidenceImportMessage[] = [];
 
+  const worksheets: string[] = [];
+  let rowCount = 0;
+  const recognizedHeaders = new Set<string>();
   const mergeMatrix = (matrix: unknown[][], prefix?: string) => {
+    rowCount += Math.max(0, matrix.length - 1);
+    if (prefix) worksheets.push(prefix);
     const capability = parseCapabilitySnapshot(matrix, artifactId);
     if (capability.recognized) {
       adapterId = "sql-evaluate-capabilities";
@@ -525,7 +538,7 @@ async function inspectEvidenceFile(file: File, rootSessionId: number | null, imp
     details.push(...result.details.map((detail) => prefix ? `${prefix}: ${detail}` : detail));
     const spill = inspectSpillTriageMatrix(matrix, { artifactId, fileName: file.name, sheetName: prefix ?? null, sourceOffset: spillCandidates.length });
     spillCandidates.push(...spill.candidates);
-    if (spill.summary) spillImports.push(spill.summary);
+    if (spill.summary) { spillImports.push(spill.summary); spill.summary.recognizedHeaders.forEach((header) => recognizedHeaders.add(header)); }
     const headerRows = matrix
       .map((row, index) => ({ row, index, headers: row.map(normalizeEvidenceHeader) }))
       .filter(({ row }) => row.some((value) => String(value ?? "").trim()))
@@ -633,7 +646,7 @@ async function inspectEvidenceFile(file: File, rootSessionId: number | null, imp
     if (embeddedPlans.length > 25) warnings.push(`${embeddedPlans.length - 25} additional embedded plans were preserved but not expanded in this case import.`);
   }
 
-  return { artifact: {
+  return { worksheets, rowCount, recognizedHeaders: [...recognizedHeaders], artifact: {
     id: artifactId,
     fileName: file.name,
     size: file.size,
@@ -660,7 +673,17 @@ function validManualPlanSelections(spillTriage: SpillTriageState): SpillManualPl
   });
 }
 
-export async function addEvidenceFiles(deepCase: DeepAnalysisCase, files: File[], importedAt = new Date().toISOString()): Promise<{ deepCase: DeepAnalysisCase; acceptedFiles: File[]; messages: EvidenceImportMessage[] }> {
+export interface PreparedEvidenceBatch {
+  caseId: string;
+  sourceCase: DeepAnalysisCase;
+  importedAt: string;
+  accepted: InspectedEvidence[];
+  acceptedFiles: File[];
+  messages: EvidenceImportMessage[];
+  previews: ImportPreviewItem[];
+}
+
+export async function prepareEvidenceFiles(deepCase: DeepAnalysisCase, files: File[], importedAt = new Date().toISOString()): Promise<PreparedEvidenceBatch> {
   const existing = new Set(deepCase.artifacts.map((artifact) => artifact.sha256));
   const uniqueFiles: File[] = [];
   const messages: EvidenceImportMessage[] = [];
@@ -701,6 +724,29 @@ export async function addEvidenceFiles(deepCase: DeepAnalysisCase, files: File[]
       messages.push({ fileName: uniqueFiles[index].name, severity: "error", code: "read-failed", message: readFailureMessage(uniqueFiles[index]) });
     }
   });
+  const previews: ImportPreviewItem[] = files.map((file, index) => {
+    const acceptedIndex = acceptedFiles.indexOf(file);
+    const item = accepted[acceptedIndex];
+    return { id: String(index), fileName: file.name, size: file.size, kind: item?.artifact.kind ?? "Unrecognized",
+      usable: Boolean(item), count: item?.spillPlans.reduce((sum, plan) => sum + plan.plan.statements.length, 0) || item?.rowCount || 0,
+      countLabel: item?.spillPlans.length ? "plan statements" : "source rows (including preamble)",
+      worksheets: item?.worksheets ?? [], ...captureRange(item ? [item.artifact.capturedAt, ...item.observations.map((observation) => observation.capturedAt)] : []),
+      recognized: item ? [...new Set([...item.artifact.resultSetTypes ?? [], ...item.recognizedHeaders])] : [],
+      missing: item ? deepCase.assertions.filter((assertion) => assertion.state === "Not Evaluated").flatMap((assertion) => assertion.missingEvidence) : [],
+      warnings: [...new Set([...(item?.artifact.warnings ?? []), ...messages.filter((message) => message.fileName === file.name).map((message) => message.message)])],
+    };
+  });
+  return { caseId: deepCase.id, sourceCase: deepCase, importedAt, accepted, acceptedFiles, messages, previews };
+}
+
+export function commitEvidenceFiles(deepCase: DeepAnalysisCase, batch: PreparedEvidenceBatch, selectedFileNames?: Set<File>): { deepCase: DeepAnalysisCase; acceptedFiles: File[]; messages: EvidenceImportMessage[] } {
+  if (deepCase.id !== batch.caseId || deepCase !== batch.sourceCase) throw new Error("This preview belongs to a different case.");
+  const importedAt = batch.importedAt;
+  const pairs = batch.acceptedFiles.map((file, index) => ({ file, item: batch.accepted[index] })).filter(({ file }) => !selectedFileNames || selectedFileNames.has(file));
+  const acceptedFiles = pairs.map(({ file }) => file);
+  const accepted = pairs.map(({ item }) => item);
+  const messages = selectedFileNames ? batch.messages.filter((message) => [...selectedFileNames].some((file) => file.name === message.fileName)) : batch.messages;
+  if (!accepted.length) return { deepCase, acceptedFiles, messages };
   const artifacts = accepted.map((item) => item.artifact);
   const observations = accepted.flatMap((item) => item.observations);
   const priorSpill = deepCase.spillTriage ?? { candidates: [], selectedCandidateId: null, imports: [], plans: [], manualPlanSelections: [] };
@@ -720,7 +766,7 @@ export async function addEvidenceFiles(deepCase: DeepAnalysisCase, files: File[]
   const collectionSteps = deepCase.profileId === "spill-triage" ? spillCollectionSteps(selectedCandidate, serverCapabilities, deepCase.id) : deepCase.collectionSteps;
   const updated = evaluateDeepCase({
     ...deepCase,
-    schemaVersion: "1.4",
+    schemaVersion: "1.5",
     updatedAt: importedAt,
     artifacts: [...deepCase.artifacts, ...artifacts],
     observations: [...(deepCase.observations ?? []), ...observations],
@@ -730,6 +776,10 @@ export async function addEvidenceFiles(deepCase: DeepAnalysisCase, files: File[]
     events: artifacts.length ? [...deepCase.events, { occurredAt: importedAt, type: "Evidence imported", summary: `${artifacts.length} evidence file${artifacts.length === 1 ? "" : "s"} attached and evaluated.` }] : deepCase.events,
   });
   return { deepCase: updated, acceptedFiles, messages };
+}
+
+export async function addEvidenceFiles(deepCase: DeepAnalysisCase, files: File[], importedAt = new Date().toISOString()) {
+  return commitEvidenceFiles(deepCase, await prepareEvidenceFiles(deepCase, files, importedAt));
 }
 
 export function selectSpillCandidate(deepCase: DeepAnalysisCase, candidateId: string): DeepAnalysisCase {
@@ -801,17 +851,18 @@ function validateCase(value: unknown): DeepAnalysisCase {
   if (!value || typeof value !== "object") throw new Error("Case JSON is not an object.");
   const candidate = value as Partial<DeepAnalysisCase>;
   const supportedProfiles: DeepProfileId[] = ["cpu-backed-blocking", "transaction-blocking", "worker-exhaustion", "compile-pressure", "memory-grants", "plan-specific", "actual-plan", "spill-triage"];
-  if ((candidate.schemaVersion !== "1.0" && candidate.schemaVersion !== "1.1" && candidate.schemaVersion !== "1.2" && candidate.schemaVersion !== "1.3" && candidate.schemaVersion !== "1.4") || typeof candidate.id !== "string" || !candidate.profileId || !supportedProfiles.includes(candidate.profileId)) throw new Error("Unsupported or malformed Deep Analysis case.");
+  if ((candidate.schemaVersion !== "1.0" && candidate.schemaVersion !== "1.1" && candidate.schemaVersion !== "1.2" && candidate.schemaVersion !== "1.3" && candidate.schemaVersion !== "1.4" && candidate.schemaVersion !== "1.5" && candidate.schemaVersion !== "1.6") || typeof candidate.id !== "string" || !candidate.profileId || !supportedProfiles.includes(candidate.profileId)) throw new Error("Unsupported or malformed Deep Analysis case.");
   if (!Array.isArray(candidate.assertions) || !Array.isArray(candidate.collectionSteps) || !Array.isArray(candidate.artifacts) || !Array.isArray(candidate.events)) throw new Error("Deep Analysis case is missing required collections.");
   if (candidate.profileId !== "spill-triage" && (!candidate.sourceFinding || typeof candidate.sourceFinding.title !== "string")) throw new Error("Deep Analysis case is missing its source finding.");
-  const deepCase = candidate as DeepAnalysisCase;
+  const details = validateCaseDetails({ title: candidate.title, ticketReference: candidate.ticketReference === undefined ? "" : candidate.ticketReference, notes: candidate.notes === undefined ? "" : candidate.notes, status: candidate.status === undefined ? "Investigating" : candidate.status });
+  const deepCase = { ...candidate, ...details } as DeepAnalysisCase;
   const serverCapabilities = deepCase.serverCapabilities ? normalizeServerCapabilitySnapshot(deepCase.serverCapabilities) : undefined;
-  if (deepCase.schemaVersion === "1.3" || deepCase.schemaVersion === "1.4") {
+  if (deepCase.schemaVersion === "1.3" || deepCase.schemaVersion === "1.4" || deepCase.schemaVersion === "1.5" || deepCase.schemaVersion === "1.6") {
     if (deepCase.spillTriage) {
       const selections = deepCase.spillTriage.manualPlanSelections;
       if (!Array.isArray(selections) || selections.some((selection) => !selection || typeof selection.candidateId !== "string" || typeof selection.artifactId !== "string" || typeof selection.statementId !== "string" || typeof selection.selectedAt !== "string" || !Number.isFinite(new Date(selection.selectedAt).getTime())) || new Set(selections.map((selection) => selection.candidateId)).size !== selections.length) throw new Error("The Spill Triage case has malformed manual plan selections.");
     }
-    if (deepCase.schemaVersion === "1.4") return { ...deepCase, serverCapabilities };
+    if (deepCase.schemaVersion === "1.4" || deepCase.schemaVersion === "1.5" || deepCase.schemaVersion === "1.6") return { ...deepCase, schemaVersion: "1.6", serverCapabilities };
   }
   const existing = new Set(deepCase.assertions.map((item) => item.id));
   const additions = [
@@ -821,14 +872,14 @@ function validateCase(value: unknown): DeepAnalysisCase {
   ].filter((item) => !existing.has(item.id));
   const migrated: DeepAnalysisCase = {
     ...deepCase,
-    schemaVersion: "1.4",
+    schemaVersion: "1.6",
     origin: deepCase.origin ?? (deepCase.sourceFinding ? { kind: "finding", finding: deepCase.sourceFinding } : { kind: "manual", label: "Spill Triage" }),
     rootIdentity: deepCase.rootIdentity ?? { sessionId: deepCase.rootSessionId },
     incidentWindow: deepCase.incidentWindow ?? { firstObservedAt: null, lastObservedAt: null, overlapQuality: "Unknown", explanation: "This case predates timestamped incident windows." },
     observations: deepCase.observations ?? [],
     captureAttempts: deepCase.captureAttempts ?? [],
     assertions: [...deepCase.assertions, ...additions],
-    spillTriage: deepCase.spillTriage ? { ...deepCase.spillTriage, manualPlanSelections: [] } : undefined,
+    spillTriage: deepCase.spillTriage ? { ...deepCase.spillTriage, manualPlanSelections: deepCase.spillTriage.manualPlanSelections ?? [] } : undefined,
     serverCapabilities,
   };
   if (migrated.profileId === "spill-triage") {
@@ -863,7 +914,7 @@ export async function createDeepCaseArchive(deepCase: DeepAnalysisCase, evidence
   const caseBytes = strToU8(JSON.stringify(deepCase, null, 2));
   const caseCopy = new Uint8Array(caseBytes.byteLength); caseCopy.set(caseBytes);
   const caseSha256 = await sha256Bytes(caseCopy.buffer);
-  const manifest: DeepCaseArchiveManifest = { schemaVersion: "1.4", caseId: deepCase.id, appVersion: APP_VERSION, exportedAt, sensitive: true, casePath, caseSha256, evidence: entries };
+  const manifest: DeepCaseArchiveManifest = { schemaVersion: "1.6", caseId: deepCase.id, appVersion: APP_VERSION, exportedAt, sensitive: true, casePath, caseSha256, evidence: entries };
   archiveFiles[manifest.casePath] = caseBytes;
   archiveFiles["manifest.json"] = strToU8(JSON.stringify(manifest, null, 2));
   return { fileName: `SQL-Evaluate-Case_${deepCase.id}.sqlevalcase.zip`, bytes: zipSync(archiveFiles, { level: 6 }), manifest };
@@ -913,7 +964,7 @@ export async function openDeepCaseArchive(file: File): Promise<{ deepCase: DeepA
   if (total > UNCOMPRESSED_LIMIT) throw new Error("The Deep Analysis case expands beyond the 200 MB safety limit.");
   if (!entries["manifest.json"]) throw new Error("The Deep Analysis case has no manifest.");
   const manifest = JSON.parse(strFromU8(entries["manifest.json"])) as DeepCaseArchiveManifest;
-  if ((manifest.schemaVersion !== "1.0" && manifest.schemaVersion !== "1.1" && manifest.schemaVersion !== "1.2" && manifest.schemaVersion !== "1.3" && manifest.schemaVersion !== "1.4") || typeof manifest.caseId !== "string" || !safeArchivePath(manifest.casePath) || (manifest.caseSha256 !== undefined && typeof manifest.caseSha256 !== "string") || !Array.isArray(manifest.evidence)) throw new Error("The Deep Analysis manifest is malformed or unsupported.");
+  if ((manifest.schemaVersion !== "1.0" && manifest.schemaVersion !== "1.1" && manifest.schemaVersion !== "1.2" && manifest.schemaVersion !== "1.3" && manifest.schemaVersion !== "1.4" && manifest.schemaVersion !== "1.5" && manifest.schemaVersion !== "1.6") || typeof manifest.caseId !== "string" || !safeArchivePath(manifest.casePath) || (manifest.caseSha256 !== undefined && typeof manifest.caseSha256 !== "string") || !Array.isArray(manifest.evidence)) throw new Error("The Deep Analysis manifest is malformed or unsupported.");
   const caseBytes = entries[manifest.casePath];
   if (!caseBytes) throw new Error("The Deep Analysis case JSON is missing.");
   if (manifest.caseSha256) {
@@ -972,7 +1023,7 @@ export async function openDeepCaseArchive(file: File): Promise<{ deepCase: DeepA
   const rebuiltSelected = rebuiltSpill?.candidates.find((candidate) => candidate.id === rebuiltSpill.selectedCandidateId) ?? rebuiltSpill?.candidates[0];
   const reconstructed = evaluateDeepCase({
     ...deepCase,
-    schemaVersion: "1.4",
+    schemaVersion: "1.5",
     updatedAt: reopenedAt,
     assertions: baseline.assertions,
     collectionSteps: deepCase.profileId === "spill-triage" ? spillCollectionSteps(rebuiltSelected, rebuiltCapabilities, deepCase.id) : baseline.collectionSteps,

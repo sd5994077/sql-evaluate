@@ -19,6 +19,7 @@ The application remains offline. It only displays or downloads commands for manu
 | First Responder Kit | `sp_BlitzAnalysis` | Existing logged `sp_BlitzFirst` history | Do not create or populate history merely for the current diagnosis. |
 | Adam Machanic | `sp_WhoIsActive` | Active requests, transactions, blocking, waits, and cached plans | Enable plan, lock, or transaction options only when needed. |
 | Ola Hallengren | Existing `CommandLog` and SQL Agent history | Correlate maintenance timing, outcome, database, and object with an incident | Read history only; do not start maintenance as evidence collection. |
+| Ola Hallengren | Verified `IndexOptimize` preview | Print a statistics-only command for an exact, independently verified target | Manual remediation artifact only; requires imported verification and `@Execute = 'N'`. |
 | Microsoft SQL Server | Native DMVs, Query Store, and last-known actual plans | Capabilities, exact provenance, stable fallback, and retained plan history | Read-only by default; unavailable features remain unavailable. |
 
 ## Plan acquisition decision
@@ -61,6 +62,7 @@ SQL Evaluate must not automatically recommend or present these as routine collec
 
 - `DBCC FREEPROCCACHE`, session termination, `sp_kill`, restore utilities, or other server-state changes.
 - Running `DatabaseBackup`, `DatabaseIntegrityCheck`, or `IndexOptimize` merely to troubleshoot an incident.
+- Treating a report-only `IndexOptimize` preview as evidence that maintenance is required; it is exposed only after separate read-only verification and DBA review.
 - First Responder Kit installation/update scripts or AI options.
 - Enabling Query Store, `LAST_QUERY_PLAN_STATS`, or an Extended Events session without separate change approval.
 

@@ -41,4 +41,11 @@ Selecting "Include raw details" can place sensitive source data into a saved
 ZIP, so raw exports must be stored in an access-controlled location.
 
 Read HOW_IT_WORKS.md for the complete operating and privacy guide.
-
+WORKSPACE SAFETY (1.6.0)
+------------------------
+Review fresh uploads in the import preview, then confirm the selected files.
+Use Edit case details for private notes, a ticket reference, and case status.
+Save case ZIP preserves those fields and the evidence; redacted handoffs omit
+handwritten details. Older cases still open; new cases require version 1.5.0+.
+Download prepared means a download started. Check browser downloads before
+closing. SQL Evaluate does not automatically save investigations to disk.

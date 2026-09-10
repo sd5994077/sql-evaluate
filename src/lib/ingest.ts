@@ -7,6 +7,8 @@ import { parseShowplan } from "./showplan";
 import { parseSupplementalEvidence } from "./supplementalEvidence";
 
 export interface ParsedSource {
+  worksheets?: string[];
+  selectableSheets?: string[];
   input: AnalysisInput;
   records: WhoIsActiveRecord[];
   plans: PlanDocument[];
@@ -55,7 +57,7 @@ function fromMatrix(file: File, format: "csv" | "xlsx", matrix: unknown[][], she
   };
 }
 
-export async function parseCaptureFile(file: File): Promise<ParsedSource> {
+export async function parseCaptureFile(file: File, sheetName?: string): Promise<ParsedSource> {
   if (file.size > 100 * 1024 * 1024) throw new Error("Capture files are limited to 100 MB.");
   const lower = file.name.toLowerCase();
   const buffer = await file.arrayBuffer();
@@ -73,9 +75,13 @@ export async function parseCaptureFile(file: File): Promise<ParsedSource> {
       return { name, matrix, score };
     }).sort((a, b) => b.score - a.score);
     if (!candidates[0] || candidates[0].score < 2) throw new Error("No worksheet contains a recognizable sp_WhoIsActive header row.");
-    const parsed = fromMatrix(file, "xlsx", candidates[0].matrix, candidates[0].name);
+    const selected = sheetName ? candidates.find((candidate) => candidate.name === sheetName && candidate.score >= 2) : candidates[0];
+    if (!selected) throw new Error("The selected worksheet does not contain recognizable activity headers.");
+    const parsed = fromMatrix(file, "xlsx", selected.matrix, selected.name);
+    parsed.worksheets = workbook.SheetNames;
+    parsed.selectableSheets = candidates.filter((candidate) => candidate.score >= 2).map((candidate) => candidate.name);
     const ties = candidates.filter((candidate) => candidate.score === candidates[0].score && candidate.name !== candidates[0].name);
-    if (ties.length) parsed.input.warnings.push(`Selected ${candidates[0].name}; equally plausible sheets: ${ties.map((tie) => tie.name).join(", ")}.`);
+    if (!sheetName && ties.length) parsed.input.warnings.push(`Selected ${candidates[0].name}; equally plausible sheets: ${ties.map((tie) => tie.name).join(", ")}.`);
     return parsed;
   }
   throw new Error("Supported capture formats are CSV, TSV, XLSX, and XLS.");
@@ -93,12 +99,12 @@ export async function parsePlanFile(file: File): Promise<ParsedSource> {
   };
 }
 
-export async function parseInputFile(file: File): Promise<ParsedSource> {
+export async function parseInputFile(file: File, sheetName?: string): Promise<ParsedSource> {
   const lower = file.name.toLowerCase();
   if (file.size === 0) throw new Error("The selected file is empty.");
   if (lower.endsWith(".sqlplan") || lower.endsWith(".xml")) return parsePlanFile(file);
   if (![".csv", ".tsv", ".xlsx", ".xls"].some((extension) => lower.endsWith(extension))) {
     throw new Error("Unsupported file type. Choose CSV, TSV, XLSX, XLS, SQLPLAN, or XML, or open a saved report/case by itself.");
   }
-  return parseCaptureFile(file);
+  return parseCaptureFile(file, sheetName);
 }

@@ -207,7 +207,7 @@ describe("deep analysis cases", () => {
     const archive = await createDeepCaseArchive(oldCase, [], "2026-08-27T15:11:00Z");
     const copy = new Uint8Array(archive.bytes.byteLength); copy.set(archive.bytes);
     const reopened = await openDeepCaseArchive(new File([copy.buffer], archive.fileName, { type: "application/zip" }));
-    expect(reopened.deepCase.schemaVersion).toBe("1.4");
+    expect(reopened.deepCase.schemaVersion).toBe("1.5");
     expect(reopened.deepCase.rootIdentity?.sessionId).toBe(104);
     expect(reopened.deepCase.assertions.some((item) => item.id === "serialization")).toBe(true);
   });

@@ -75,6 +75,25 @@ export interface SupplementalEvidenceSource {
   rowCount: number;
 }
 
+export interface PlanObjectIdentity {
+  server?: string | null;
+  database?: string | null;
+  schema?: string | null;
+  table?: string | null;
+  index?: string | null;
+  kind?: string | null;
+}
+
+export interface PlanStatisticsUsage {
+  database: string | null;
+  schema: string | null;
+  table: string | null;
+  statistics: string | null;
+  modificationCount: number | null;
+  samplingPercent: number | null;
+  lastUpdate: string | null;
+}
+
 export interface PlanOperator {
   id: string;
   nodeId: number | null;
@@ -85,6 +104,7 @@ export interface PlanOperator {
   estimatedCost: number | null;
   warnings: string[];
   objectName?: string;
+  objectIdentity?: PlanObjectIdentity;
   predicate?: string | null;
   seekPredicate?: string | null;
   residualPredicate?: string | null;
@@ -130,6 +150,7 @@ export interface PlanStatement {
   memoryGrant?: { requestedKb: number; grantedKb: number; usedKb: number };
   operators: PlanOperator[];
   warnings: string[];
+  statisticsUsage?: PlanStatisticsUsage[];
   queryIdentity?: PlanQueryIdentity;
   nonParallelPlanReason?: string | null;
   earlyAbortReason?: string | null;

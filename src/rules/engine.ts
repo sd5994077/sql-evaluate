@@ -1,10 +1,11 @@
 import { WHOISACTIVE_COLUMNS } from "../schema";
 import type { AnalysisInput, AnalysisReport, BlockingContext, BlockingParticipant, CaptureRecommendation, Confidence, DataQuality, DiagnosticTool, Finding, FindingCapDisclosure, FindingQualification, FindingTimeline, PlanDocument, PlanStatement, RelatedFindingLink, RuleContext, RuleDefinition, Severity, SupplementalEvidenceSource, ThresholdProfileSnapshot, WhoIsActiveRecord } from "../types";
 import { parseShowplan } from "../lib/showplan";
-import { differenceSeconds, formatDuration, formatNumber, formatTempdbPages, makeId, percentile } from "../lib/utils";
+import { asNumber, differenceSeconds, formatDuration, formatNumber, formatTempdbPages, makeId, percentile } from "../lib/utils";
 import { REFERENCES } from "./catalog";
 import { DEFAULT_THRESHOLD_PROFILE_SNAPSHOT, validateThresholdProfileSnapshotShape } from "./thresholdProfiles";
 import { deepAnalysisProfileForFinding } from "../deepAnalysis/profile";
+import { composeInvestigationGuideSafely } from "./investigationGuide";
 
 const severityRank: Record<Severity, number> = { Critical: 6, High: 5, Medium: 4, Low: 3, Informational: 2, "Not Evaluated": 1 };
 const confidenceRank: Record<Confidence, number> = { High: 3, Medium: 2, Low: 1 };
@@ -131,6 +132,57 @@ function group<T>(values: T[], key: (value: T) => string): Map<string, T[]> {
 
 function episodeKey(record: WhoIsActiveRecord): string {
   return `${record.sessionId ?? "?"}:${record.requestId ?? 0}:${record.startTime ?? record.loginTime ?? "?"}`;
+}
+
+interface DerivedRate { value: number | null; basis: "cumulative growth"; resetObserved: boolean; reportedDeltaWithoutInterval: boolean; }
+
+function hasOriginalColumn(record: WhoIsActiveRecord, column: string): boolean {
+  return Object.keys(record.original).some((key) => key.toLowerCase() === column.toLowerCase());
+}
+
+function originalNumericValue(record: WhoIsActiveRecord, column: string): number | null {
+  const entry = Object.entries(record.original).find(([key]) => key.toLowerCase() === column.toLowerCase());
+  return entry ? asNumber(entry[1]) : null;
+}
+
+function derivedRate(records: WhoIsActiveRecord[], value: (record: WhoIsActiveRecord) => number | null, deltaColumn: string, cumulativeColumn: string): DerivedRate {
+  const ordered = [...records]
+    .filter((record) => record.collectionTime && value(record) !== null)
+    .sort((left, right) => String(left.collectionTime).localeCompare(String(right.collectionTime)));
+  let movement = 0;
+  let seconds = 0;
+  let resetObserved = ordered.some((record) => (originalNumericValue(record, deltaColumn) ?? 0) < 0);
+  let cumulativeIntervals = 0;
+  const reportedDeltaWithoutInterval = ordered.some((record) => hasOriginalColumn(record, deltaColumn));
+  for (let index = 1; index < ordered.length; index += 1) {
+    if (ordered[index - 1].sourceId !== ordered[index].sourceId) continue;
+    const elapsed = differenceSeconds(ordered[index - 1].collectionTime, ordered[index].collectionTime) ?? 0;
+    if (elapsed <= 0) continue;
+    if (hasOriginalColumn(ordered[index - 1], deltaColumn) || hasOriginalColumn(ordered[index], deltaColumn)) {
+      continue;
+    }
+    const previous = originalNumericValue(ordered[index - 1], cumulativeColumn);
+    const current = originalNumericValue(ordered[index], cumulativeColumn);
+    if (previous === null || current === null || value(ordered[index - 1]) === null || value(ordered[index]) === null) continue;
+    if (current < previous) { resetObserved = true; continue; }
+    movement += current - previous;
+    cumulativeIntervals += 1;
+    seconds += elapsed;
+  }
+  return { value: cumulativeIntervals > 0 && seconds > 0 ? movement / seconds : null, basis: "cumulative growth", resetObserved, reportedDeltaWithoutInterval };
+}
+
+function rateEvidence(label: string, rate: DerivedRate, unit: string): Finding["evidence"] {
+  return rate.value === null ? [] : [{ label: `${label} (${rate.basis})`, value: `${formatNumber(rate.value)} ${unit}/s` }];
+}
+
+function counterLabel(label: string, record: WhoIsActiveRecord, deltaColumn: string, cumulativeColumn: string): string {
+  if (originalNumericValue(record, deltaColumn) !== null) return `${label} (reported delta)`;
+  return hasOriginalColumn(record, cumulativeColumn) ? `${label} (cumulative)` : label;
+}
+
+function formatRatio(value: number): string {
+  return value > 0 && value < 0.01 ? "<0.01×" : `${formatNumber(value)}×`;
 }
 
 function originalNumber(record: WhoIsActiveRecord, aliases: string[]): number | null {
@@ -338,12 +390,16 @@ const resourceRule: RuleDefinition = {
   evaluate(context) {
     const metrics = (record: WhoIsActiveRecord) => [record.cpuMs, record.reads, record.writes, record.usedMemoryPages, record.tempdbCurrentPages].filter((value): value is number => value !== null);
     const captureDistributions = new Map<string, number[][]>();
+    const capturePopulations = new Map<string, Set<string>>();
     for (const record of context.records) {
       const key = `${record.sourceId}:${record.collectionTime ?? "unknown"}`;
       const distributions = captureDistributions.get(key) ?? [[], [], [], [], []];
       [record.cpuMs, record.reads, record.writes, record.usedMemoryPages, record.tempdbCurrentPages]
         .forEach((value, index) => { if (value !== null) distributions[index].push(value); });
       captureDistributions.set(key, distributions);
+      const population = capturePopulations.get(key) ?? new Set<string>();
+      population.add(episodeKey(record));
+      capturePopulations.set(key, population);
     }
     const episodes = [...group(context.records.filter((record) => {
       if (["THREADPOOL", "RESOURCE_SEMAPHORE_QUERY_COMPILE"].includes(record.wait?.type.toUpperCase() ?? "")) return false;
@@ -355,6 +411,7 @@ const resourceRule: RuleDefinition = {
       const values = [latest.cpuMs, latest.reads, latest.writes, latest.usedMemoryPages, latest.tempdbCurrentPages];
       const distributions = captureDistributions.get(`${latest.sourceId}:${latest.collectionTime ?? "unknown"}`) ?? [[], [], [], [], []];
       const peakPercentile = Math.max(...values.map((value, index) => value === null ? 0 : percentile(distributions[index], value)));
+      const comparisonPopulation = capturePopulations.get(`${latest.sourceId}:${latest.collectionTime ?? "unknown"}`)?.size ?? 0;
       const repeated = new Set(records.map((record) => record.collectionTime).filter(Boolean)).size;
       const resourceTimeline = buildTimeline("Relative resource rank", "percent", records.map((record) => {
         const pointValues = [record.cpuMs, record.reads, record.writes, record.usedMemoryPages, record.tempdbCurrentPages];
@@ -368,12 +425,32 @@ const resourceRule: RuleDefinition = {
       if (!severity) return null;
       const observation = times(records);
       const missing = missingColumns(context, ["query_plan"]);
+      const durationRecord = [...records].sort((left, right) => (right.durationSeconds ?? 0) - (left.durationSeconds ?? 0))[0];
+      const cpuElapsedRatio = originalNumericValue(durationRecord, "CPU") !== null && !hasOriginalColumn(durationRecord, "CPU_delta") && (durationRecord.durationSeconds ?? 0) > 0
+        ? durationRecord.cpuMs! / (durationRecord.durationSeconds! * 1000)
+        : null;
+      const completion = latest.percentComplete === null || latest.percentComplete === undefined ? "Not supplied" : `${formatNumber(latest.percentComplete)}%`;
+      const rates = {
+        cpu: derivedRate(records, (record) => record.cpuMs, "CPU_delta", "CPU"),
+        reads: derivedRate(records, (record) => record.reads, "reads_delta", "reads"),
+        writes: derivedRate(records, (record) => record.writes, "writes_delta", "writes"),
+        physicalReads: derivedRate(records, (record) => record.physicalReads, "physical_reads_delta", "physical_reads"),
+        tempdbAllocation: derivedRate(records, (record) => record.tempdbAllocationPages, "tempdb_allocations_delta", "tempdb_allocations"),
+        tempdbCurrent: derivedRate(records, (record) => record.tempdbCurrentPages, "tempdb_current_delta", "tempdb_current"),
+      };
+      const resetObserved = Object.values(rates).some((rate) => rate.resetObserved);
+      const deltaIntervalMissing = Object.values(rates).some((rate) => rate.reportedDeltaWithoutInterval);
       const limitations = [
         repeated === 1 ? "Only one capture point was supplied, so repeated consumption cannot be confirmed." : null,
-        "Resource values are ranked against this capture; server capacity and a normal workload baseline were not supplied.",
+        comparisonPopulation <= 1 ? "Only one request episode was visible at the latest capture, so peer-relative outlier status cannot be established." : "Resource values are ranked against this capture; server capacity and a normal workload baseline were not supplied.",
+        "CPU-to-elapsed ratio and counter rates are contextual calculations; they do not establish CPU pressure, spills, memory pressure, or storage saturation without corroborating server and plan evidence.",
+        deltaIntervalMissing ? "Reported delta columns were preserved as interval totals, but no measurement-interval field was supplied, so they were not divided by the time between capture rows or presented as per-second rates." : null,
+        resetObserved ? "At least one counter decreased or reported an invalid negative delta; that interval was excluded from derived rates rather than interpreted as negative consumption." : null,
         missing.length ? "No execution plan was supplied to connect resource use to operators or estimates." : null,
       ].filter((value): value is string => Boolean(value));
-      return finding(this.id, severity, repeated >= context.thresholds.resources.mediumConfidenceCaptures ? "Medium" : "Low", this.category, `Session ${latest.sessionId ?? "unknown"} is a sustained resource outlier`, `Runtime ${formatDuration(peakDuration)}; capture-relative percentile ${(peakPercentile * 100).toFixed(0)} across ${repeated} capture${repeated === 1 ? "" : "s"}.`, {
+      const title = comparisonPopulation <= 1 ? `Session ${latest.sessionId ?? "unknown"} is a sustained resource consumer` : `Session ${latest.sessionId ?? "unknown"} is a sustained resource outlier`;
+      const rankSummary = comparisonPopulation <= 1 ? `only one request episode was visible for comparison` : `capture-relative percentile ${(peakPercentile * 100).toFixed(0)} among ${comparisonPopulation} request episodes`;
+      return finding(this.id, severity, repeated >= context.thresholds.resources.mediumConfidenceCaptures ? "Medium" : "Low", this.category, title, `Runtime ${formatDuration(peakDuration)}; ${rankSummary} across ${repeated} capture${repeated === 1 ? "" : "s"}.`, {
         explanation: "Resource counters can be cumulative and server capacity is unknown. This finding combines duration, relative rank, and persistence instead of treating a raw counter as a universal threshold.",
         confidenceReason: repeated >= context.thresholds.resources.mediumConfidenceCaptures ? `Medium confidence because the session remained elevated across ${repeated} capture points, but no server baseline was supplied.` : "Low confidence because this is a one-capture, workload-relative outlier without a server baseline.",
         limitations,
@@ -384,7 +461,27 @@ const resourceRule: RuleDefinition = {
           diagnosticTool("First Responder Kit · sp_BlitzCache", "Confirm whether this query is important across the plan cache. Choose the sort matching the observed resource.", "EXEC dbo.sp_BlitzCache @SortOrder = 'CPU';", "Repeat with 'Reads' or 'Writes' only when that resource is the relevant signal."),
         ],
         remediation: ["Review the statement and actual plan when available, and compare delta rates with a normal workload window.", "Check indexing, row estimates, spills, and application batching before changing server-wide settings."],
-        evidence: [{ label: "Runtime", value: formatDuration(peakDuration) }, { label: "Relative percentile", value: (peakPercentile * 100).toFixed(0) }, { label: "Captures", value: String(repeated) }, { label: "CPU", value: formatNumber(latest.cpuMs) }, { label: "Reads", value: formatNumber(latest.reads) }, { label: "Tempdb current", value: formatTempdbPages(latest.tempdbCurrentPages) }],
+        evidence: [
+          { label: "Runtime", value: formatDuration(peakDuration) },
+          { label: "Relative percentile", value: (peakPercentile * 100).toFixed(0) },
+          { label: "Comparison population", value: String(comparisonPopulation) },
+          { label: "Captures", value: String(repeated) },
+          { label: "Last observed", value: latest.collectionTime ?? "Not supplied" },
+          { label: "Last status", value: latest.status ?? "Not supplied" },
+          { label: "Completion", value: completion },
+          { label: counterLabel("CPU", latest, "CPU_delta", "CPU"), value: formatNumber(latest.cpuMs) },
+          { label: counterLabel("Reads", latest, "reads_delta", "reads"), value: formatNumber(latest.reads) },
+          { label: counterLabel("Writes", latest, "writes_delta", "writes"), value: formatNumber(latest.writes) },
+          { label: counterLabel("Physical reads", latest, "physical_reads_delta", "physical_reads"), value: formatNumber(latest.physicalReads) },
+          { label: "Tempdb current", value: formatTempdbPages(latest.tempdbCurrentPages) },
+          ...(cpuElapsedRatio === null ? [] : [{ label: "CPU / elapsed (context only)", value: formatRatio(cpuElapsedRatio) }]),
+          ...rateEvidence("Derived CPU rate", rates.cpu, "ms"),
+          ...rateEvidence("Derived reads rate", rates.reads, "reads"),
+          ...rateEvidence("Derived writes rate", rates.writes, "writes"),
+          ...rateEvidence("Derived physical-read rate", rates.physicalReads, "reads"),
+          ...rateEvidence("Derived TempDB allocation rate", rates.tempdbAllocation, "pages"),
+          ...rateEvidence("Derived TempDB-current growth rate", rates.tempdbCurrent, "pages"),
+        ],
         references: this.references, affectedRecordIds: records.map((record) => record.id), firstSeen: observation.first, lastSeen: observation.last, persistenceSeconds: observation.persistence, impact: peakDuration * peakPercentile,
       });
     }).filter((value): value is Finding => Boolean(value)).sort((a, b) => b.impact - a.impact);
@@ -550,11 +647,28 @@ const waitRule: RuleDefinition = {
           diagnosticTool("First Responder Kit · sp_BlitzFirst", "Determine whether this wait family is significant at the server level during the same interval.", "EXEC dbo.sp_BlitzFirst @ExpertMode = 1;"),
         ],
         remediation: ["Use the linked Microsoft wait reference, then correlate with blocking, query text, plan operators, storage latency, memory grants, or client behavior as appropriate."],
-        evidence: [{ label: "Wait", value: wait.type }, { label: "Category", value: wait.category }, { label: "Maximum wait", value: `${formatNumber(maxWait)} ms` }, { label: "Observed", value: formatDuration(observation.persistence) }],
+        evidence: [{ label: "Wait", value: wait.type }, { label: "Category", value: wait.category }, { label: "Maximum wait", value: `${formatNumber(maxWait)} ms` }, { label: "Observation span", value: formatDuration(observation.persistence) }],
         references: this.references, affectedRecordIds: records.map((record) => record.id), firstSeen: observation.first, lastSeen: observation.last, persistenceSeconds: observation.persistence, impact: maxWait + observation.persistence,
       });
     }).filter((value): value is Finding => Boolean(value)).sort((a, b) => b.impact - a.impact);
-    return [...specialized, ...generic];
+    const transient = generic.filter((item) => item.severity === "Informational" && item.affectedRecordIds.length === 1 && item.impact < context.thresholds.waits.actionableDurationMs);
+    const retained = generic.filter((item) => !transient.includes(item));
+    if (transient.length > 1) {
+      const waitTypes = transient.map((item) => item.evidence.find((entry) => entry.label === "Wait")?.value).filter((value): value is string => Boolean(value));
+      const transientRecordIds = new Set(transient.flatMap((item) => item.affectedRecordIds));
+      const maximumWait = Math.max(0, ...context.records.filter((record) => transientRecordIds.has(record.id)).map((record) => record.wait?.durationMs ?? 0));
+      retained.push(finding("WIA-WAIT-TRANSIENT-SUMMARY", "Informational", "Low", this.category, "Minor transient waits observed", `${transient.length} isolated sub-${formatNumber(context.thresholds.waits.actionableDurationMs)} ms wait observations were rolled into context rather than presented as separate investigation targets.`, {
+        explanation: "Short, isolated waits can occur during normal request execution. The observations remain disclosed without implying that their wait families caused the incident.",
+        confidenceReason: "Low confidence in diagnostic significance because each rolled-up wait appeared once below the actionable-duration threshold without captured blocking.",
+        limitations: ["This rollup does not establish whether any wait family is significant at the server level."],
+        remediation: ["No wait-specific action is indicated from these isolated observations. Prioritize persistent findings and corroborate waits at the server level if the slowdown continues."],
+        evidence: [{ label: "Rolled-up observations", value: String(transient.length) }, { label: "Wait types", value: [...new Set(waitTypes)].sort().join(", ") }, { label: "Maximum reported wait", value: `${formatNumber(maximumWait)} ms` }],
+        references: this.references,
+        affectedRecordIds: transient.flatMap((item) => item.affectedRecordIds),
+        impact: maximumWait,
+      }));
+    } else retained.push(...transient);
+    return [...specialized, ...retained];
   },
 };
 
@@ -573,15 +687,18 @@ const transactionRule: RuleDefinition = {
       const severity: Severity = (sleeping && isBlocker) || age >= context.thresholds.transactions.highAgeSeconds ? "High" : age >= context.thresholds.transactions.mediumAgeSeconds || latest.implicitTran ? "Medium" : "Low";
       const observation = times(records);
       const hasTransactionStart = records.some((record) => Boolean(record.tranStartTime));
-      const transactionTimeline = buildTimeline(hasTransactionStart ? "Transaction age" : "Request age proxy", "seconds", records.map((record) => ({ capturedAt: record.collectionTime, value: differenceSeconds(record.tranStartTime ?? null, record.collectionTime) ?? record.durationSeconds })));
+      const distinctTransactionStarts = new Set(records.map((record) => record.tranStartTime).filter(Boolean)).size;
+      const stableTransactionStart = distinctTransactionStarts === 1;
+      const transactionTimeline = buildTimeline(stableTransactionStart ? "Transaction age" : "Request age proxy", "seconds", records.map((record) => ({ capturedAt: record.collectionTime, value: stableTransactionStart ? differenceSeconds(record.tranStartTime ?? null, record.collectionTime) : record.durationSeconds })));
       const missing = missingColumns(context, ["tran_start_time", "locks"]);
       if (!context.presentColumns.has("sql_text") && !context.presentColumns.has("sql_command")) missing.push("sql_text or sql_command");
       const limitations = [
         records.length === 1 ? "Only one transaction observation was supplied, so growth or persistence cannot be confirmed." : null,
         !hasTransactionStart ? "Transaction start time was unavailable; request age is shown as a proxy and may understate transaction age." : null,
+        distinctTransactionStarts > 1 ? `${distinctTransactionStarts} transaction start times were observed, so the timeline uses request age and does not imply one continuously open transaction.` : null,
         missing.length ? `Additional transaction evidence was not supplied: ${missing.join(", ")}.` : null,
       ].filter((value): value is string => Boolean(value));
-      return finding(this.id, severity, isBlocker ? "High" : "Medium", this.category, `Session ${latest.sessionId ?? "unknown"} has an open transaction`, `${latest.openTranCount} open transaction${latest.openTranCount === 1 ? "" : "s"}; request age ${formatDuration(age)}.`, {
+      return finding(this.id, severity, isBlocker ? "High" : "Medium", this.category, `Session ${latest.sessionId ?? "unknown"} has open-transaction activity`, `Latest capture reported ${latest.openTranCount} open transaction${latest.openTranCount === 1 ? "" : "s"}; request age ${formatDuration(age)}.`, {
         explanation: sleeping && isBlocker ? "A sleeping head blocker with an open transaction can retain locks without doing active work." : "Long transactions retain locks and log records longer, increasing contention and recovery pressure.",
         confidenceReason: isBlocker ? "High confidence because the open transaction belongs to a session that is directly blocking other captured requests." : `Medium confidence because an open transaction is present${records.length > 1 ? " across repeated observations" : ""}, but direct blocking impact was not established.`,
         limitations,
@@ -592,7 +709,7 @@ const transactionRule: RuleDefinition = {
           diagnosticTool("First Responder Kit · sp_BlitzWho", "Compare the transaction with other active requests before considering intervention.", "EXEC dbo.sp_BlitzWho;"),
         ],
         remediation: ["Trace the application transaction path and verify commit/rollback behavior; inspect SQL text and locks before taking action.", "Reduce work inside the transaction where safe. Do not automatically kill a session from this report."],
-        evidence: [{ label: "Session", value: String(latest.sessionId ?? "Unknown") }, { label: "Open transactions", value: String(latest.openTranCount) }, { label: "Status", value: latest.status ?? "Unknown" }, { label: "Request age", value: formatDuration(age) }, { label: "Head blocker", value: isBlocker ? "Yes" : "No" }],
+        evidence: [{ label: "Session", value: String(latest.sessionId ?? "Unknown") }, { label: "Latest open transactions", value: String(latest.openTranCount) }, { label: "Distinct transaction starts", value: String(distinctTransactionStarts) }, { label: "Latest transaction age", value: latest.tranStartTime ? formatDuration(differenceSeconds(latest.tranStartTime, latest.collectionTime) ?? 0) : "Not supplied" }, { label: "Status", value: latest.status ?? "Unknown" }, { label: "Request age", value: formatDuration(age) }, { label: "Head blocker", value: isBlocker ? "Yes" : "No" }],
         references: this.references, affectedRecordIds: records.map((record) => record.id), firstSeen: observation.first, lastSeen: observation.last, persistenceSeconds: observation.persistence, impact: age + (isBlocker ? 10_000 : 0),
       });
     }).filter((value): value is Finding => Boolean(value)).sort((a, b) => b.impact - a.impact);
@@ -802,12 +919,13 @@ export function analyze(inputs: AnalysisInput[], records: WhoIsActiveRecord[], s
     warnings: [
       ...inputs.flatMap((input) => input.warnings),
       ...embedded.warnings,
-      ...(() => { const count = records.filter((record) => Boolean(record.waitParseWarning)).length; return count ? [`${count} parenthesized wait_info observation${count === 1 ? "" : "s"} could not be parsed and ${count === 1 ? "was" : "were"} retained only in the original activity data.`] : []; })(),
+      ...(() => { const count = records.filter((record) => Boolean(record.waitParseWarning)).length; return count ? [`${count} wait_info observation${count === 1 ? "" : "s"} could not be parsed and ${count === 1 ? "was" : "were"} retained only in the original activity data.`] : []; })(),
       ...(presentColumns.has("tempdb_current") || presentColumns.has("tempdb_allocations") ? ["Per-session TempDB pages show request-level consumption only; they do not establish overall TempDB utilization, free space inside the data files, or Windows volume headroom."] : []),
     ],
     notEvaluatedRules,
     findingCaps,
     suppressedSignals: [
+      (() => { const rollup = findings.find((finding) => finding.ruleId === "WIA-WAIT-TRANSIENT-SUMMARY"); const count = rollup?.evidence.find((item) => item.label === "Rolled-up observations")?.value; return count ? `${count} isolated minor wait observations were retained in activity data and rolled into one informational summary.` : null; })(),
       (() => { const count = records.filter((record) => record.wait?.durationMs === 0 && (record.blockingSessionId ?? 0) <= 0 && !["THREADPOOL", "RESOURCE_SEMAPHORE_QUERY_COMPILE"].includes(record.wait.type.toUpperCase())).length; return count ? `${count} zero-duration wait observation${count === 1 ? " was" : "s were"} retained in activity data but suppressed from findings.` : null; })(),
       (() => { const count = records.filter((record) => (record.openTranCount ?? 0) > 0 && (record.durationSeconds ?? 0) < context.thresholds.transactions.mediumAgeSeconds && (record.sessionId === null || !blockingOwnerSessionIds.has(record.sessionId)) && !record.implicitTran).length; return count ? `${count} short, non-blocking open-transaction observation${count === 1 ? " was" : "s were"} suppressed from findings.` : null; })(),
       (() => { const count = records.filter((record) => (record.durationSeconds ?? 0) < context.thresholds.resources.minimumDurationSeconds && [record.cpuMs, record.reads, record.writes, record.usedMemoryPages, record.tempdbCurrentPages].some((value) => (value ?? 0) > 0)).length; return count ? `${count} sub-${context.thresholds.resources.minimumDurationSeconds}-second resource observation${count === 1 ? " was" : "s were"} kept out of capture-relative outlier findings.` : null; })(),
@@ -817,5 +935,6 @@ export function analyze(inputs: AnalysisInput[], records: WhoIsActiveRecord[], s
   findings.forEach((item) => { item.deepAnalysisProfile = deepAnalysisProfileForFinding(item) ?? undefined; });
   enrichRelatedFindings(findings, plans);
   linkSchedulerBackedBlocking(findings);
-  return { schemaVersion: "1.0", createdAt: new Date().toISOString(), inputs, records, plans, findings, dataQuality, redacted: false, thresholdProfile: resolvedProfile };
+  const baseReport: AnalysisReport = { schemaVersion: "1.0", createdAt: new Date().toISOString(), inputs, records, plans, findings, dataQuality, redacted: false, thresholdProfile: resolvedProfile };
+  return { ...baseReport, investigationGuide: composeInvestigationGuideSafely(baseReport) };
 }

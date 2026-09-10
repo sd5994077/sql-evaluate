@@ -1,0 +1,4 @@
+Total Spills,Avg Spills,# Executions,Last Execution,Total CPU,Avg CPU,Total Duration,Avg Duration,Total Reads,Avg Reads,Database,Object Name,Plan Handle,SQL Handle,Query Hash,Query Plan Hash,Statement Start Offset,Statement End Offset,Warnings,Remove Plan Handle From Cache,Future Metric
+158870,15887,10,2026-09-02 09:26:50,00:03:00,00:00:18,00:08:00,00:00:48,12000000,1200000,SyntheticDb,dbo.SyntheticWork,0xAAA,0xSQL1,0x111,0x222,0,100,"Sort Spill; Hash Spill","DBCC FREEPROCCACHE (0xAAA);",preserved
+100000,50000,2,2026-09-02 09:27:10,00:01:00,00:00:30,00:02:00,00:01:00,8000000,4000000,SyntheticDb,dbo.SyntheticWork,0xBBB,0xSQL1,0x111,0x333,0,100,Sort Spill,"DBCC FREEPROCCACHE (0xBBB);",preserved
+0,0,1,,00:00:01,00:00:01,00:00:02,00:00:02,100,100,SyntheticDb,dbo.WarningOnly,0xCCC,0xSQL2,0x444,0x555,0,50,Spill warning,"DBCC FREEPROCCACHE (0xCCC);",preserved

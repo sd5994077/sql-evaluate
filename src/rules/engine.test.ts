@@ -316,4 +316,102 @@ describe("diagnostic engine", () => {
       { ruleId: "WIA-TRANSACTION", retainedCount: 20, suppressedCount: 10, order: "Descending diagnostic impact" },
     ]);
   });
+
+  it("builds an evidence-linked investigation order without claiming a single-session peer outlier", () => {
+    const headers = ["session_id", "request_id", "collection_time", "start_time", "tran_start_time", "status", "percent_complete", "open_tran_count", "wait_info", "CPU", "reads", "physical_reads", "tempdb_allocations", "tempdb_current"];
+    const rows = [headers,
+      [163, 0, "2026-08-22T12:00:00Z", "2026-08-22T10:00:00Z", "2026-08-22T11:00:00Z", "suspended", null, 1, "(1500ms)PAGEIOLATCH_SH", 1_000, 10_000, 1_000, 100, 500],
+      [163, 0, "2026-08-22T12:01:00Z", "2026-08-22T10:00:00Z", "2026-08-22T11:00:00Z", "suspended", null, 1, "(1600ms)PAGEIOLATCH_SH", 2_000, 16_000, 1_600, 160, 560],
+      [163, 0, "2026-08-22T12:02:00Z", "2026-08-22T10:00:00Z", "2026-08-22T11:00:00Z", "suspended", null, 2, "(1700ms)PAGEIOLATCH_SH", 4_000, 28_000, 2_800, 280, 680],
+    ];
+    const source: AnalysisInput = { id: "guided", fileName: "guided.csv", size: 100, format: "csv", rowCount: 3, recognizedColumns: headers, unknownColumns: [], warnings: [] };
+    const report = analyze([source], normalizeRows(source.id, rows, 0), []);
+    const resource = report.findings.find((finding) => finding.ruleId === "WIA-RESOURCE")!;
+    expect(resource.severity).toBe("High");
+    expect(resource.title).toContain("sustained resource consumer");
+    expect(resource.title).not.toContain("outlier");
+    expect(resource.evidence).toEqual(expect.arrayContaining([
+      { label: "Comparison population", value: "1" },
+      { label: "Completion", value: "Not supplied" },
+      { label: "Derived reads rate (cumulative growth)", value: "150 reads/s" },
+    ]));
+    expect(report.investigationGuide?.subjects[0]).toMatchObject({ sessionId: 163, lastStatus: "suspended", blockingObserved: false, completion: "No completion estimate was supplied." });
+    expect(report.investigationGuide?.steps.map((step) => step.actionType)).toEqual(["Capture", "Upload", "Corroborate", "Capture"]);
+    expect(report.investigationGuide?.steps.map((step) => step.order)).toEqual([1, 2, 3, 4]);
+  });
+
+  it("uses request age when transaction starts change across one request episode", () => {
+    const headers = ["session_id", "request_id", "collection_time", "start_time", "tran_start_time", "open_tran_count", "status"];
+    const rows = [headers,
+      [163, 0, "2026-08-22T12:00:00Z", "2026-08-22T10:00:00Z", "2026-08-22T11:50:00Z", 1, "running"],
+      [163, 0, "2026-08-22T12:02:00Z", "2026-08-22T10:00:00Z", "2026-08-22T11:59:00Z", 2, "running"],
+    ];
+    const source: AnalysisInput = { id: "transaction-reset", fileName: "transaction-reset.csv", size: 100, format: "csv", rowCount: 2, recognizedColumns: headers, unknownColumns: [], warnings: [] };
+    const transaction = analyze([source], normalizeRows(source.id, rows, 0), []).findings.find((finding) => finding.ruleId === "WIA-TRANSACTION")!;
+    expect(transaction.timeline?.metric).toBe("Request age proxy");
+    expect(transaction.evidence).toContainEqual({ label: "Distinct transaction starts", value: "2" });
+    expect(transaction.limitations?.join(" ")).toMatch(/does not imply one continuously open transaction/i);
+  });
+
+  it("preserves reported deltas without inventing an interval and excludes cumulative counter resets", () => {
+    const deltaHeaders = ["session_id", "collection_time", "start_time", "CPU_delta", "reads_delta", "writes_delta"];
+    const deltaRows = [deltaHeaders,
+      [51, "2026-08-22T12:00:00Z", "2026-08-22T10:00:00Z", 600, 600, 30],
+      [51, "2026-08-22T12:01:00Z", "2026-08-22T10:00:00Z", 1_200, 1_200, 60],
+      [51, "2026-08-22T12:02:00Z", "2026-08-22T10:00:00Z", 1_800, 1_800, 120],
+    ];
+    const deltaSource: AnalysisInput = { id: "delta-rates", fileName: "delta-rates.csv", size: 100, format: "csv", rowCount: 3, recognizedColumns: deltaHeaders, unknownColumns: [], warnings: [] };
+    const deltaFinding = analyze([deltaSource], normalizeRows(deltaSource.id, deltaRows, 0), []).findings.find((finding) => finding.ruleId === "WIA-RESOURCE")!;
+    expect(deltaFinding.evidence).toEqual(expect.arrayContaining([
+      { label: "CPU (reported delta)", value: "1,800" },
+    ]));
+    expect(deltaFinding.evidence.some((item) => item.label.startsWith("Derived "))).toBe(false);
+    expect(deltaFinding.evidence.some((item) => item.label === "CPU / elapsed (context only)")).toBe(false);
+    expect(deltaFinding.limitations?.join(" ")).toMatch(/no measurement-interval field.*not.*per-second rates/i);
+
+    const cumulativeHeaders = ["session_id", "collection_time", "start_time", "reads"];
+    const cumulativeRows = [cumulativeHeaders,
+      [52, "2026-08-22T12:00:00Z", "2026-08-22T10:00:00Z", 1_000],
+      [52, "2026-08-22T12:01:00Z", "2026-08-22T10:00:00Z", 100],
+      [52, "2026-08-22T12:02:00Z", "2026-08-22T10:00:00Z", 300],
+    ];
+    const cumulativeSource: AnalysisInput = { id: "counter-reset", fileName: "counter-reset.csv", size: 100, format: "csv", rowCount: 3, recognizedColumns: cumulativeHeaders, unknownColumns: [], warnings: [] };
+    const cumulativeFinding = analyze([cumulativeSource], normalizeRows(cumulativeSource.id, cumulativeRows, 0), []).findings.find((finding) => finding.ruleId === "WIA-RESOURCE")!;
+    expect(cumulativeFinding.evidence).toContainEqual({ label: "Derived reads rate (cumulative growth)", value: "3.3 reads/s" });
+    expect(cumulativeFinding.limitations?.join(" ")).toMatch(/counter decreased.*excluded/i);
+  });
+
+  it("keeps a finite numeric maximum when a custom profile rolls up four-digit waits", async () => {
+    const custom = structuredClone(DEFAULT_THRESHOLD_PROFILE) as ThresholdProfile;
+    custom.id = "dba.wait-rollup";
+    custom.name = "DBA wait rollup";
+    custom.thresholds.waits.actionableDurationMs = 2_000;
+    const snapshot = await createThresholdProfileSnapshot(custom);
+    const headers = ["session_id", "collection_time", "wait_info"];
+    const rows = [headers,
+      [51, "2026-08-22T12:00:00Z", "(1200ms)CUSTOM_WAIT_A"],
+      [52, "2026-08-22T12:00:00Z", "(1300ms)CUSTOM_WAIT_B"],
+    ];
+    const source: AnalysisInput = { id: "four-digit-waits", fileName: "four-digit-waits.csv", size: 100, format: "csv", rowCount: 2, recognizedColumns: headers, unknownColumns: [], warnings: [] };
+    const rollup = analyze([source], normalizeRows(source.id, rows, 0), [], snapshot).findings.find((finding) => finding.ruleId === "WIA-WAIT-TRANSIENT-SUMMARY")!;
+
+    expect(rollup.impact).toBe(1_300);
+    expect(Number.isFinite(rollup.impact)).toBe(true);
+    expect(rollup.evidence).toContainEqual({ label: "Maximum reported wait", value: "1,300 ms" });
+  });
+
+  it("rolls isolated minor waits into one disclosed context finding", () => {
+    const headers = ["session_id", "collection_time", "wait_info"];
+    const rows = [headers,
+      [163, "2026-08-22T12:00:00Z", "(39ms)LOGBUFFER"],
+      [163, "2026-08-22T12:01:00Z", "(3ms)PAGELATCH_EX"],
+      [163, "2026-08-22T12:02:00Z", "(1ms)PREEMPTIVE_OS_AUTHENTICATIONOPS"],
+    ];
+    const source: AnalysisInput = { id: "minor-waits", fileName: "minor-waits.csv", size: 100, format: "csv", rowCount: 3, recognizedColumns: headers, unknownColumns: [], warnings: [] };
+    const waits = analyze([source], normalizeRows(source.id, rows, 0), []).findings.filter((finding) => finding.ruleId.startsWith("WIA-WAIT"));
+    expect(waits).toHaveLength(1);
+    expect(waits[0]).toMatchObject({ ruleId: "WIA-WAIT-TRANSIENT-SUMMARY", severity: "Informational" });
+    expect(waits[0].evidence).toContainEqual({ label: "Rolled-up observations", value: "3" });
+    expect(analyze([source], normalizeRows(source.id, rows, 0), []).dataQuality.suppressedSignals?.join(" ")).toMatch(/3 isolated minor wait observations.*rolled into one/i);
+  });
 });

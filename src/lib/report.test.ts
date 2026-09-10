@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AnalysisReport } from "../types";
-import { findingsCsv, printableReport, redactReport, validateReport, validateReportShape } from "./report";
+import { findingsCsv, investigationGuideCsv, printableReport, redactReport, validateReport, validateReportShape } from "./report";
 import { DEFAULT_THRESHOLD_PROFILE_SNAPSHOT } from "../rules/thresholdProfiles";
 
 const report: AnalysisReport = {
@@ -44,12 +44,8 @@ describe("report exports", () => {
   it("redacts sensitive fields and literals by default", () => {
     const safe = redactReport(report);
     expect(safe.redacted).toBe(true);
-    expect(safe.records[0].loginName).toBe("[redacted]");
-    expect(safe.records[0].sqlText).not.toContain("Ada");
-    expect(safe.records[0].sqlText).not.toContain("123456");
-    expect(safe.records[0].original.sql_text).toBe("[redacted]");
-    expect(safe.records[0].original.sql_text__2).toBe("[redacted]");
-    expect(safe.records[0].original.query_plan__2).toBe("[redacted]");
+    expect(safe.records).toEqual([]);
+    expect(safe.findings[0].affectedRecordIds).toEqual([]);
     expect(safe.plans[0].statements[0].operators[0].objectName).toBe("[redacted object]");
     expect(safe.plans[0].statements[0].operators[0].predicate).toBe("[redacted expression]");
     expect(safe.plans[0].statements[0].operators[0].seekPredicate).toBe("[redacted expression]");
@@ -94,6 +90,26 @@ describe("report exports", () => {
     expect(printableReport(legacy)).toContain("Legacy report — threshold profile not recorded.");
     const tooManyPoints = Array.from({ length: 73 }, (_, index) => ({ capturedAt: new Date(index * 1_000).toISOString(), value: index }));
     expect(() => validateReportShape({ ...enhancedReport, findings: [{ ...enhancedReport.findings[0], timeline: { ...enhancedReport.findings[0].timeline!, points: tooManyPoints } }] })).toThrow(/compatible/);
+  });
+
+  it("validates and exports a report-owned investigation guide while accepting legacy reports without one", () => {
+    const guided: AnalysisReport = { ...report, investigationGuide: {
+      schemaVersion: "1.0",
+      conclusion: "Priority review without a root-cause claim.",
+      missingEvidence: ["No execution plan was supplied."],
+      subjects: [{ id: "session-51-request-0", sessionId: 51, requestId: 0, lastObservedAt: null, lastStatus: null, durationSeconds: 60, resourceSummary: [{ label: "CPU", value: "100" }], blockingObserved: false, completion: "No completion estimate was supplied.", primaryEvidenceGap: "No plan." }],
+      steps: [{ id: "guide-step-1", order: 1, title: "Upload a plan", reason: "Evaluate operators.", actionType: "Upload", condition: "Use a representative plan.", expectedEvidence: ["Plan warnings"], caution: "Handle SQL securely.", command: "EXEC dbo.sp_WhoIsActive @get_plans = 1;", sourceFindingIds: ["f"], targetFindingId: "f" }],
+    } };
+    expect(validateReportShape(guided).investigationGuide?.steps).toHaveLength(1);
+    expect(findingsCsv(guided)).toContain("GUIDE-STEP");
+    expect(findingsCsv(guided)).not.toContain("EXEC dbo.sp_WhoIsActive @get_plans = 1;");
+    expect(investigationGuideCsv(guided)).toContain("Use a representative plan");
+    expect(investigationGuideCsv(guided)).toContain("EXEC dbo.sp_WhoIsActive @get_plans = 1;");
+    expect(printableReport(guided)).toContain("Expected evidence");
+    expect(() => validateReportShape({ ...guided, investigationGuide: { ...guided.investigationGuide!, steps: [{ ...guided.investigationGuide!.steps[0], order: 2 }] } })).toThrow(/compatible/);
+    expect(() => validateReportShape({ ...guided, investigationGuide: { ...guided.investigationGuide!, steps: [{ ...guided.investigationGuide!.steps[0], sourceFindingIds: ["missing"] }] } })).toThrow(/compatible/);
+    expect(() => validateReportShape({ ...guided, investigationGuide: { ...guided.investigationGuide!, steps: [{ ...guided.investigationGuide!.steps[0], deepAnalysisProfile: "Invalid Profile!" }] } })).toThrow(/compatible/);
+    expect(validateReportShape(report).investigationGuide).toBeUndefined();
   });
 
   it("rejects a structurally valid report whose profile digest does not match", async () => {

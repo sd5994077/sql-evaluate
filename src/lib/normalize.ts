@@ -31,12 +31,13 @@ export function waitCategory(type: string): string {
 export function parseWait(value: unknown): WaitInfo | null {
   const text = asText(value);
   if (!text) return null;
+  if (/^(?:NULL|NONE|N\/A)$/i.test(text)) return null;
   const parenthesized = text.match(NATIVE_WAIT_PATTERN);
   if (text.startsWith("(") && !parenthesized) return null;
   const namedDuration = text.match(NAMED_WAITTIME_PATTERN);
-  const plainType = text.match(/^([A-Za-z0-9_]+)(?:[\s:]|$)/)?.[1];
+  const plainType = text.match(/^([A-Za-z][A-Za-z0-9_]*)(?:[\s:]|$)/)?.[1];
   const type = (parenthesized?.[3] ?? plainType)?.trim();
-  if (!type) return null;
+  if (!type || /^(?:ON|OFF|TRUE|FALSE|NULL|NONE)$/i.test(type)) return null;
   const durationsMs = parenthesized
     ? [...parenthesized[2].matchAll(new RegExp(`(${GROUPED_INTEGER_PATTERN})\\s*ms`, "gi"))].map((match) => groupedInteger(match[1]))
     : namedDuration ? [groupedInteger(namedDuration[1])] : [];
@@ -78,7 +79,8 @@ export function normalizeRows(sourceId: string, matrix: unknown[][], headerIndex
       const collectionTime = asIsoDate(pick(original, "collection_time"));
       const startTime = asIsoDate(pick(original, "start_time"));
       const duration = durationTextToSeconds(pick(original, "dd hh:mm:ss.mss")) ?? differenceSeconds(startTime, collectionTime);
-      const waitText = asText(pick(original, "wait_info"));
+      const rawWaitText = asText(pick(original, "wait_info"));
+      const waitText = rawWaitText && !/^(?:NULL|NONE|N\/A)$/i.test(rawWaitText) ? rawWaitText : null;
       const wait = parseWait(waitText);
       return {
         id: `${sourceId}-row-${headerIndex + index + 2}`,
@@ -92,8 +94,9 @@ export function normalizeRows(sourceId: string, matrix: unknown[][], headerIndex
         loginTime: asIsoDate(pick(original, "login_time")),
         durationSeconds: duration,
         wait,
-        waitParseWarning: waitText?.startsWith("(") && !wait ? "The parenthesized wait_info value could not be parsed." : null,
+        waitParseWarning: waitText && !wait ? "The wait_info value could not be parsed as a SQL Server wait observation." : null,
         status: asText(pick(original, "status"))?.toLowerCase() ?? null,
+        percentComplete: asNumber(pick(original, "percent_complete")),
         blockingSessionId: asNumber(pick(original, "blocking_session_id")),
         blockedSessionCount: asNumber(pick(original, "blocked_session_count")),
         openTranCount: asNumber(pick(original, "open_tran_count")),

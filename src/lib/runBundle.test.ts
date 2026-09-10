@@ -16,6 +16,7 @@ const report: AnalysisReport = {
   findings: [],
   dataQuality: { presentColumns: ["session_id", "collection_time"], missingColumns: [], unknownColumns: [], warnings: [], notEvaluatedRules: [], findingCaps: [{ ruleId: "WIA-WAIT", retainedCount: 24, suppressedCount: 6, order: "Descending diagnostic impact" }] },
   thresholdProfile: DEFAULT_THRESHOLD_PROFILE_SNAPSHOT,
+  investigationGuide: { schemaVersion: "1.0", conclusion: "No actionable concern was established in the supplied capture interval.", missingEvidence: [], subjects: [], steps: [] },
 };
 
 describe("run archive", () => {
@@ -36,6 +37,7 @@ describe("run archive", () => {
       "normalized/activity.csv",
       "results/analysis.sqleval.json",
       "results/findings.csv",
+      "results/investigation-guide.csv",
       "results/report.html",
     ]);
     expect(strFromU8(files["results/analysis.sqleval.json"])).not.toContain("domain\\\\person");
@@ -43,16 +45,19 @@ describe("run archive", () => {
     const processingLog = JSON.parse(strFromU8(files["diagnostics/processing-log.json"]));
     expect(manifest.rawIncluded).toBe(false);
     expect(manifest.thresholdProfile).toEqual({ id: DEFAULT_THRESHOLD_PROFILE_SNAPSHOT.id, name: DEFAULT_THRESHOLD_PROFILE_SNAPSHOT.name, version: DEFAULT_THRESHOLD_PROFILE_SNAPSHOT.version, digest: DEFAULT_THRESHOLD_PROFILE_SNAPSHOT.digest, builtIn: true });
+    expect(manifest.investigationGuide).toEqual({ schemaVersion: "1.0", stepCount: 0 });
     expect(processingLog.thresholdProfile).toEqual(DEFAULT_THRESHOLD_PROFILE_SNAPSHOT);
     expect(manifest.sources[0]).toMatchObject({ fileName: "capture.csv", included: false, sha256: expect.stringMatching(/^[a-f0-9]{64}$/) });
     expect(files["source/capture.csv"]).toBeUndefined();
-    for (const path of ["results/analysis.sqleval.json", "results/findings.csv", "results/report.html", "normalized/activity.csv"]) {
+    for (const path of ["results/analysis.sqleval.json", "results/findings.csv", "results/investigation-guide.csv", "results/report.html", "normalized/activity.csv"]) {
       const content = strFromU8(files[path]);
       expect(content).not.toContain("SELECT 'secret'");
       expect(content).not.toContain("PrivateDb");
       expect(content).not.toContain("domain\\person");
     }
     expect(strFromU8(files["results/findings.csv"])).toContain("6 additional WIA-WAIT findings were suppressed after retaining 24");
+    expect(JSON.parse(strFromU8(files["results/analysis.sqleval.json"])).records).toEqual([]);
+    expect(strFromU8(files["normalized/activity.csv"]).split(/\r?\n/)).toHaveLength(1);
     expect(strFromU8(files["results/findings.csv"])).toBe(findingsCsv(redactReport(report)));
     expect(strFromU8(files["results/report.html"])).toContain("6 additional WIA-WAIT findings were suppressed after retaining 24");
     expect(strFromU8(files["results/report.html"])).toBe(printableReport(redactReport(report)));
@@ -63,7 +68,11 @@ describe("run archive", () => {
 
   it("includes original sources only after raw export is authorized", async () => {
     const source = new File(["session_id\n51\n"], "../capture.csv", { type: "text/csv" });
-    const archive = await createRunArchive(report, [source], {
+    const formulaReport: AnalysisReport = {
+      ...report,
+      records: [{ ...report.records[0], programName: "+DDE", sqlText: "=WEBSERVICE(\"https://example.invalid\")" }],
+    };
+    const archive = await createRunArchive(formulaReport, [source], {
       includeRaw: true,
       processingErrors: ["one optional file was skipped"],
       runId: "20260825-084500-test5678",
@@ -72,6 +81,10 @@ describe("run archive", () => {
     const files = unzipSync(archive.bytes);
 
     expect(files["source/capture.csv"]).toBeDefined();
+    const activity = strFromU8(files["normalized/activity.csv"]);
+    expect(activity).toContain("'+DDE");
+    expect(activity).toContain("'=WEBSERVICE");
+    expect(activity).not.toMatch(/(?:^|,)[=+@]/m);
     expect(strFromU8(files["diagnostics/processing-log.json"])).toContain("one optional file was skipped");
   });
 

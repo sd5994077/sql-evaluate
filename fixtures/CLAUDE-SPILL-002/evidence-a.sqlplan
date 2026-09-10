@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan" Version="1.539" Build="16.0.4165.4">
+  <BatchSequence><Batch><Statements>
+    <StmtSimple StatementText="SELECT synthetic aurora workload" StatementType="SELECT" QueryStoreQueryId="7001" QueryStorePlanId="7101" DatabaseId="11" StatementSubTreeCost="811.4">
+      <QueryPlan DegreeOfParallelism="4" MemoryGrant="2097152">
+        <MemoryGrantInfo RequestedMemory="2097152" GrantedMemory="2097152" MaxUsedMemory="1966080" />
+        <RelOp NodeId="12" PhysicalOp="Sort" LogicalOp="Sort" EstimateRows="5000000" EstimatedTotalSubtreeCost="811.4" Parallel="1">
+          <RunTimeInformation><RunTimeCountersPerThread Thread="0" ActualRows="5000000" ActualExecutions="1" /></RunTimeInformation>
+          <Warnings SpillToTempDb="1"><SortSpillDetails SpillLevel="2" SpilledThreadCount="3" GrantedMemoryKb="2097152" UsedMemoryKb="1966080" WritesToTempDb="131072" TempdbFileCount="6" /></Warnings>
+          <Sort><RelOp NodeId="20" PhysicalOp="Hash Match" LogicalOp="Inner Join" EstimateRows="100" EstimatedTotalSubtreeCost="700" Parallel="1">
+            <RunTimeInformation><RunTimeCountersPerThread Thread="0" ActualRows="5000000" ActualExecutions="1" /></RunTimeInformation>
+            <Hash><RelOp NodeId="27" PhysicalOp="Clustered Index Scan" LogicalOp="Clustered Index Scan" EstimateRows="5" EstimatedTotalSubtreeCost="500" Parallel="1">
+              <RunTimeInformation><RunTimeCountersPerThread Thread="0" ActualRows="5000000" ActualRowsRead="5000000" ActualExecutions="1" /></RunTimeInformation>
+              <IndexScan><Object Database="[AtlasOps]" Schema="[dbo]" Table="[AuroraLedger]" Index="[PK_AuroraLedger]" /></IndexScan>
+            </RelOp></Hash>
+          </RelOp></Sort>
+        </RelOp>
+      </QueryPlan>
+    </StmtSimple>
+    <StmtSimple StatementText="SELECT synthetic unrelated statement" StatementType="SELECT" QueryStoreQueryId="7999" QueryStorePlanId="7999" DatabaseId="11" StatementSubTreeCost="0.02">
+      <QueryPlan DegreeOfParallelism="1"><RelOp NodeId="40" PhysicalOp="Index Seek" LogicalOp="Index Seek" EstimateRows="1" EstimatedTotalSubtreeCost="0.02"><IndexScan><Object Database="[AtlasOps]" Schema="[dbo]" Table="[ReferenceData]" Index="[IX_ReferenceData]" /></IndexScan></RelOp></QueryPlan>
+    </StmtSimple>
+  </Statements></Batch></BatchSequence>
+</ShowPlanXML>

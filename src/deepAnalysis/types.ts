@@ -1,11 +1,13 @@
-import type { BlockingContext, Confidence, EvidenceItem, Severity } from "../types";
+import type { BlockingContext, Confidence, EvidenceItem, PlanDocument, Severity } from "../types";
 
 export type DeepEvidenceState = "Observed" | "Supported" | "Contradicted" | "Not Evaluated";
 export type DeepArtifactKind = "Scheduler" | "Locks" | "Memory grants" | "Plan cache" | "Execution plan" | "Diagnostic result";
 export type DeepCollectionStatus = "Pending" | "Partially imported" | "Imported";
+export type DiagnosticProvider = "SQL Evaluate native" | "First Responder Kit" | "sp_WhoIsActive" | "Ola Hallengren" | "Manual workflow";
+export type DiagnosticAvailability = "Available" | "Unavailable" | "Unknown" | "Approval required";
 export type DeepOverlapQuality = "Exact" | "Overlapping" | "Context only" | "Unknown";
 export type DeepDirectness = "Direct" | "Derived" | "Contextual";
-export type DeepProfileId = "cpu-backed-blocking" | "transaction-blocking" | "worker-exhaustion" | "compile-pressure" | "memory-grants" | "plan-specific" | "actual-plan";
+export type DeepProfileId = "cpu-backed-blocking" | "transaction-blocking" | "worker-exhaustion" | "compile-pressure" | "memory-grants" | "plan-specific" | "actual-plan" | "spill-triage";
 
 export interface DeepQueryIdentity {
   sessionId?: number | null;
@@ -82,6 +84,13 @@ export interface DeepCaseArtifact {
   warnings?: string[];
 }
 
+export interface EvidenceImportMessage {
+  fileName: string;
+  severity: "info" | "warning" | "error";
+  code: "duplicate" | "empty-file" | "unsupported-type" | "read-failed" | "plan-invalid" | "plan-identity-missing" | "plan-identity-conflict" | "capability-invalid" | "capability-stale";
+  message: string;
+}
+
 export interface DeepCaptureAttempt {
   id: string;
   occurredAt: string;
@@ -106,11 +115,52 @@ export interface DeepCollectionStep {
   artifactIds: string[];
   executionMode?: "Read-only" | "Administrative";
   requiresApproval?: boolean;
+  recipeId?: string;
+  provider?: DiagnosticProvider;
+  availability?: DiagnosticAvailability;
+  selectionReason?: string;
+  unavailableReason?: string;
+}
+
+export interface InstalledDiagnosticTool {
+  toolId: string;
+  databaseName: string | null;
+  schemaName: string | null;
+  objectName: string;
+  installed: boolean;
+  compatibleSignature: boolean | null;
+  version: string | null;
+  versionDate: string | null;
+  detectedParameters: string[];
+}
+
+export interface ServerCapabilitySnapshot {
+  schemaVersion: "1.0";
+  adapterId: "SQL_EVALUATE_CAPABILITIES_V1";
+  capturedAt: string;
+  sourceArtifactId: string;
+  serverName: string | null;
+  productVersion: string;
+  productLevel: string | null;
+  edition: string | null;
+  engineEdition: number | null;
+  databaseId: number | null;
+  databaseName: string | null;
+  lastQueryPlanStats: "ON" | "OFF" | "UNAVAILABLE" | "UNKNOWN";
+  queryStoreState: string | null;
+  permissions: {
+    viewServerState: boolean | null;
+    viewServerPerformanceState: boolean | null;
+    viewDatabaseState: boolean | null;
+    viewDatabasePerformanceState: boolean | null;
+  };
+  tools: InstalledDiagnosticTool[];
+  warnings: string[];
 }
 
 export interface DeepCaseEvent {
   occurredAt: string;
-  type: "Case created" | "Evidence imported" | "Case reopened";
+  type: "Case created" | "Evidence imported" | "Case reopened" | "Case details changed";
   summary: string;
 }
 
@@ -126,16 +176,111 @@ export interface DeepSourceFinding {
   blockingContext?: BlockingContext;
 }
 
+export type SpillMetricState = "imported" | "derived" | "missing" | "zero-or-nonpositive" | "invalid";
+
+export interface SpillNumericMetric {
+  rawHeader: string | null;
+  rawValue: unknown;
+  value: number | null;
+  unit: "pages" | "executions" | "milliseconds" | "reads";
+  state: SpillMetricState;
+  explanation?: string;
+}
+
+export interface SpillCandidate {
+  id: string;
+  artifactId: string;
+  fileName: string;
+  sheetName: string | null;
+  rowNumber: number;
+  sourceOrder: number;
+  identity: DeepQueryIdentity;
+  databaseName: string | null;
+  objectName: string | null;
+  queryType: string | null;
+  warnings: string[];
+  totalSpillPages: SpillNumericMetric;
+  averageSpillPages: SpillNumericMetric;
+  minimumSpillPages: SpillNumericMetric;
+  maximumSpillPages: SpillNumericMetric;
+  executionCount: SpillNumericMetric;
+  lastExecution: string | null;
+  lastExecutionRaw: unknown;
+  totalCpu: SpillNumericMetric;
+  averageCpu: SpillNumericMetric;
+  totalDuration: SpillNumericMetric;
+  averageDuration: SpillNumericMetric;
+  totalReads: SpillNumericMetric;
+  averageReads: SpillNumericMetric;
+  administrativeText: Array<{ header: string; value: string }>;
+  unknownColumns: Array<{ header: string; value: unknown }>;
+  embeddedPlanXml?: string;
+  rankGroup: "total" | "average-only" | "unranked";
+  rank: number | null;
+  rankReason: string;
+}
+
+export interface SpillImportSummary {
+  artifactId: string;
+  fileName: string;
+  sheetName: string | null;
+  headerRow?: number | null;
+  ignoredSheets?: Array<{ sheetName: string; reason: string }>;
+  importedRows: number;
+  rankableRows: number;
+  recognizedHeaders: string[];
+  unknownHeaders: string[];
+  warnings: string[];
+}
+
+export interface SpillPlanEvidence {
+  artifactId: string;
+  fileName: string;
+  plan: PlanDocument;
+}
+
+export interface SpillManualPlanSelection {
+  candidateId: string;
+  artifactId: string;
+  statementId: string;
+  selectedAt: string;
+}
+
+export interface SpillTriageState {
+  candidates: SpillCandidate[];
+  selectedCandidateId: string | null;
+  imports: SpillImportSummary[];
+  plans: SpillPlanEvidence[];
+  manualPlanSelections: SpillManualPlanSelection[];
+}
+
+export type DeepCaseOrigin =
+  | { kind: "finding"; finding: DeepSourceFinding }
+  | { kind: "manual"; label: string };
+
+export type CaseStatus = "Investigating" | "Waiting for evidence" | "Closed";
+
+export interface CaseDetails {
+  title: string;
+  ticketReference: string;
+  notes: string;
+  status: CaseStatus;
+}
+
 export interface DeepAnalysisCase {
-  schemaVersion: "1.0" | "1.1";
+  schemaVersion: "1.0" | "1.1" | "1.2" | "1.3" | "1.4" | "1.5" | "1.6";
   id: string;
   profileId: DeepProfileId;
   title: string;
   createdAt: string;
   updatedAt: string;
+  ticketReference?: string;
+  notes?: string;
+  status?: CaseStatus;
   sourceReportCreatedAt: string;
   sourceFileNames: string[];
-  sourceFinding: DeepSourceFinding;
+  sourceFinding?: DeepSourceFinding;
+  origin?: DeepCaseOrigin;
   rootSessionId: number | null;
   incidentWindow?: DeepIncidentWindow;
   rootIdentity?: DeepQueryIdentity;
@@ -151,13 +296,15 @@ export interface DeepAnalysisCase {
   };
   assertions: DeepEvidenceAssertion[];
   collectionSteps: DeepCollectionStep[];
+  serverCapabilities?: ServerCapabilitySnapshot;
   artifacts: DeepCaseArtifact[];
   events: DeepCaseEvent[];
+  spillTriage?: SpillTriageState;
   sensitive: true;
 }
 
 export interface DeepCaseArchiveManifest {
-  schemaVersion: "1.0" | "1.1";
+  schemaVersion: "1.0" | "1.1" | "1.2" | "1.3" | "1.4" | "1.5" | "1.6";
   caseId: string;
   appVersion: string;
   exportedAt: string;

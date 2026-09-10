@@ -1,6 +1,6 @@
-import type { AnalysisReport, Finding, FindingCapDisclosure, ThresholdProfileSnapshot, WhoIsActiveRecord } from "../types";
+import type { AnalysisReport, Finding, FindingCapDisclosure, ThresholdProfileSnapshot } from "../types";
 import { isBuiltInThresholdProfileId, validateThresholdProfileSnapshotShape, verifyThresholdProfileSnapshot } from "../rules/thresholdProfiles";
-import { escapeHtml } from "./utils";
+import { escapeHtml, formatDuration } from "./utils";
 
 export function safeExternalUrl(value: string): string | null {
   try {
@@ -42,6 +42,7 @@ function redactOptimizerToken(value: string | null | undefined): string | null |
 function redactFinding(finding: Finding): Finding {
   return {
     ...finding,
+    affectedRecordIds: [],
     evidence: finding.evidence.map((item) => SENSITIVE_EVIDENCE_LABEL.test(item.label) ? { ...item, value: "[redacted]" } : item),
     qualifications: finding.qualifications?.map((qualification) => ({
       ...qualification,
@@ -58,27 +59,11 @@ function redactFinding(finding: Finding): Finding {
   };
 }
 
-function redactRecord(record: WhoIsActiveRecord): WhoIsActiveRecord {
-  const original: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
-  for (const key of Object.keys(record.original)) original[key] = "[redacted]";
-  return {
-    ...record,
-    loginName: record.loginName ? "[redacted]" : null,
-    hostName: record.hostName ? "[redacted]" : null,
-    programName: record.programName ? "[redacted]" : null,
-    databaseName: record.databaseName ? "[redacted]" : null,
-    sqlText: redactSql(record.sqlText),
-    sqlCommand: redactSql(record.sqlCommand),
-    queryPlanXml: record.queryPlanXml ? "[redacted plan XML]" : null,
-    original,
-  };
-}
-
 export function redactReport(report: AnalysisReport): AnalysisReport {
   return {
     ...report,
     redacted: true,
-    records: report.records.map(redactRecord),
+    records: [],
     plans: report.plans.map((plan) => ({
       ...plan,
       statements: plan.statements.map((statement) => ({
@@ -149,8 +134,19 @@ export function findingsCsv(report: AnalysisReport): string {
   for (const cap of findingCaps) rows.push([
     "Informational", "High", "Exact count from the bounded rule output.", "", "Data quality", "FINDING-CAP", "", `${cap.ruleId} findings truncated`, findingCapMessage(cap), "", "", "", "", "", "", "", "Review the retained findings and exported suppression count together.", "", ...profileCells,
   ]);
+  for (const step of report.investigationGuide?.steps ?? []) rows.push([
+    "Informational", "High", "Report-owned investigation ordering.", [step.condition, step.caution].filter(Boolean).join(" | "), "Investigation guide", "GUIDE-STEP", step.deepAnalysisProfile ?? "", `${step.order}. ${step.title}`, step.reason, "", step.sourceFindingIds.map((id) => byId.get(id)?.title ?? id).join(" | "), step.actionType, step.expectedEvidence.join(" | "), "", "", "", "", "", ...profileCells,
+  ]);
   rows.push([
     "Informational", "High", "Report-level audit metadata.", "", "Data quality", "THRESHOLD-PROFILE", "", thresholdProfileLabel(report.thresholdProfile), report.thresholdProfile ? "Exact resolved threshold profile recorded with this analysis." : "Legacy report — threshold profile not recorded.", "", "", "", "", "", "", "", "", "", ...profileCells,
+  ]);
+  return rows.map((row) => row.map(csvCell).join(",")).join("\r\n");
+}
+
+export function investigationGuideCsv(report: AnalysisReport): string {
+  const rows = [["Order", "Action", "Title", "Reason", "Condition", "Expected evidence", "Caution", "Command", "Source finding IDs", "Deep Analysis profile"]];
+  for (const step of report.investigationGuide?.steps ?? []) rows.push([
+    String(step.order), step.actionType, step.title, step.reason, step.condition ?? "", step.expectedEvidence.join(" | "), step.caution ?? "", step.command ?? "", step.sourceFindingIds.join(" | "), step.deepAnalysisProfile ?? "",
   ]);
   return rows.map((row) => row.map(csvCell).join(",")).join("\r\n");
 }
@@ -166,6 +162,7 @@ export function printableReport(report: AnalysisReport): string {
   const profileAudit = report.thresholdProfile
     ? `<section class="profile-audit"><h2>Threshold profile</h2><p><b>${escapeHtml(report.thresholdProfile.name)}</b> · ${escapeHtml(report.thresholdProfile.id)}@${escapeHtml(report.thresholdProfile.version)} · ${isBuiltInThresholdProfileId(report.thresholdProfile.id) ? "Built-in" : "Custom"}</p><p class="digest">SHA-256 ${escapeHtml(report.thresholdProfile.digest)}</p><details><summary>Exact resolved thresholds</summary><table><tbody>${thresholdRows(report.thresholdProfile)}</tbody></table></details></section>`
     : `<section class="profile-audit legacy"><h2>Threshold profile</h2><p><b>Not recorded</b></p><p>Legacy report — threshold profile not recorded.</p></section>`;
+  const guide = report.investigationGuide ? `<section class="guide"><div class="eyebrow">Recommended investigation order</div><h2>Start here</h2><p>${escapeHtml(report.investigationGuide.conclusion)}</p>${report.investigationGuide.subjects.map((subject) => `<div class="guide-subject"><b>Session ${escapeHtml(subject.sessionId ?? "unknown")}</b> · last ${escapeHtml(subject.lastStatus ?? "status unavailable")} · runtime ${escapeHtml(formatDuration(subject.durationSeconds))}<p>${escapeHtml(subject.completion)} ${escapeHtml(subject.primaryEvidenceGap)}</p><dl>${subject.resourceSummary.map((item) => `<div><dt>${escapeHtml(item.label)}</dt><dd>${escapeHtml(item.value)}</dd></div>`).join("")}</dl></div>`).join("")}<ol>${report.investigationGuide.steps.map((step) => `<li><b>${escapeHtml(step.title)}</b> <span>${escapeHtml(step.actionType)}</span><p>${escapeHtml(step.reason)}</p>${step.condition ? `<p><b>When:</b> ${escapeHtml(step.condition)}</p>` : ""}<p><b>Expected evidence:</b> ${escapeHtml(step.expectedEvidence.join(" · "))}</p>${step.command ? `<pre>${escapeHtml(step.command)}</pre>` : ""}${step.caution ? `<small>Caution: ${escapeHtml(step.caution)}</small>` : ""}</li>`).join("")}</ol>${report.investigationGuide.missingEvidence.length ? `<details><summary>Evidence gaps</summary><ul>${report.investigationGuide.missingEvidence.map((gap) => `<li>${escapeHtml(gap)}</li>`).join("")}</ul></details>` : ""}</section>` : "";
   const findings = report.findings.map((item) => `
     <article class="finding ${item.severity.toLowerCase().replace(" ", "-")}">
       <div class="eyebrow">${escapeHtml(item.severity)} · ${escapeHtml(item.confidence)} confidence · ${escapeHtml(item.category)}${item.deepAnalysisProfile ? ` · Deep Analysis: ${escapeHtml(item.deepAnalysisProfile)}` : ""}</div>
@@ -180,7 +177,7 @@ export function printableReport(report: AnalysisReport): string {
     </article>`).join("");
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>SQL Evaluate report</title><style>
   :root{font-family:Aptos,Segoe UI,sans-serif;color:#142333;background:#eef3f6}body{max-width:1100px;margin:0 auto;padding:48px 30px}header{border-bottom:4px solid #14b8d4;padding-bottom:24px;margin-bottom:24px}h1{font:700 34px Bahnschrift,Aptos,sans-serif;letter-spacing:.02em;margin:0 0 8px}.summary{display:flex;gap:10px;flex-wrap:wrap}.pill{border:1px solid #c5d1da;background:white;padding:8px 12px}.audit{background:#fff7df;border:1px solid #d4a514;padding:14px 20px;margin:14px 0}.profile-audit{background:#eaf7fa;border:1px solid #1689a7;padding:14px 20px;margin:14px 0}.profile-audit.legacy{background:#f3f4f6;border-color:#78909c}.profile-audit .digest{font:12px ui-monospace,SFMono-Regular,Consolas,monospace;overflow-wrap:anywhere}.profile-audit table{margin-top:10px;border-collapse:collapse;width:100%;font-size:12px}.profile-audit th,.profile-audit td{border:1px solid #c5d1da;padding:5px 8px;text-align:left}.profile-audit th{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;width:70%}.finding{break-inside:avoid;background:#fff;border-left:5px solid #78909c;margin:14px 0;padding:20px 24px;box-shadow:0 2px 8px #14304412}.finding.critical{border-color:#9f1239}.finding.high{border-color:#c62828}.finding.medium{border-color:#ed7d20}.finding.low{border-color:#d4a514}.finding.informational{border-color:#1689a7}.finding.not-evaluated{border-color:#718096}.eyebrow{text-transform:uppercase;font-size:11px;font-weight:700;letter-spacing:.1em}h2{font-size:20px;margin:7px 0}p,li{line-height:1.45}dl{display:flex;gap:20px;flex-wrap:wrap}dt{font-size:11px;text-transform:uppercase;color:#536878}dd{margin:2px 0;font-weight:700}.blocking,.investigation,.tool,.qualifications{border:1px solid #c5d1da;padding:12px;margin:8px 0}.qualifications ul{margin:0;padding-left:18px}.qualifications span{margin-left:8px;color:#536878}.qualifications p{margin:3px 0 8px}.blocking p,.tool p{margin:5px 0}.blocking pre,.investigation pre,.tool pre{white-space:pre-wrap;background:#eef3f6;padding:10px}.investigation small,.tool small{color:#6a5723}.refs a{color:#07627a}@media print{body{padding:0;background:#fff}.finding{box-shadow:none;border-top:1px solid #ddd}}
-  </style></head><body><header><div class="eyebrow">Offline SQL diagnostic</div><h1>SQL Evaluate report</h1><p>Created ${escapeHtml(new Date(report.createdAt).toLocaleString())} · ${report.records.length.toLocaleString()} activity rows · ${report.plans.length} plans</p><div class="summary">${counts.map((item) => `<span class="pill"><b>${item.count}</b> ${escapeHtml(item.severity)}</span>`).join("")}</div></header>${profileAudit}${capAudit}${findings}</body></html>`;
+  </style></head><body><header><div class="eyebrow">Offline SQL diagnostic</div><h1>SQL Evaluate report</h1><p>Created ${escapeHtml(new Date(report.createdAt).toLocaleString())} · ${report.records.length.toLocaleString()} activity rows · ${report.plans.length} plans</p><div class="summary">${counts.map((item) => `<span class="pill"><b>${item.count}</b> ${escapeHtml(item.severity)}</span>`).join("")}</div></header>${profileAudit}${guide}${capAudit}${findings}</body></html>`;
 }
 
 export function validateReportShape(value: unknown): AnalysisReport {
@@ -188,6 +185,7 @@ export function validateReportShape(value: unknown): AnalysisReport {
   const report = value as Partial<AnalysisReport>;
   const object = (item: unknown): item is Record<string, unknown> => Boolean(item) && typeof item === "object";
   const strings = (item: unknown): item is string[] => Array.isArray(item) && item.every((entry) => typeof entry === "string");
+  const deepProfileTokenValid = (item: unknown) => item === undefined || typeof item === "string" && item.length > 0 && item.length <= 64 && /^[a-z0-9-]+$/.test(item);
   const inputValid = (item: unknown) => object(item) && typeof item.id === "string" && typeof item.fileName === "string" && strings(item.recognizedColumns) && strings(item.unknownColumns) && strings(item.warnings);
   const recordValid = (item: unknown) => object(item) && typeof item.id === "string" && typeof item.sourceId === "string" && object(item.original);
   const operatorValid = (item: unknown) => object(item) && typeof item.id === "string" && typeof item.physicalOp === "string" && typeof item.logicalOp === "string" && strings(item.warnings);
@@ -225,13 +223,29 @@ export function validateReportShape(value: unknown): AnalysisReport {
     && (item.nextCapture === undefined || captureValid(item.nextCapture))
     && (item.relatedFindings === undefined || (Array.isArray(item.relatedFindings) && item.relatedFindings.length <= 5 && item.relatedFindings.every(relatedValid)))
     && (item.qualifications === undefined || qualificationsValid(item.qualifications))
-    && (item.deepAnalysisProfile === undefined || typeof item.deepAnalysisProfile === "string")
+    && deepProfileTokenValid(item.deepAnalysisProfile)
     && (item.blockingContext === undefined || (object(item.blockingContext) && typeof item.blockingContext.headBlockerSessionId === "number" && Array.isArray(item.blockingContext.blockedSessionIds) && item.blockingContext.blockedSessionIds.every((entry) => typeof entry === "number") && typeof item.blockingContext.totalBlockedSessions === "number" && (item.blockingContext.status === null || typeof item.blockingContext.status === "string") && (item.blockingContext.databaseName === null || typeof item.blockingContext.databaseName === "string") && (item.blockingContext.openTransactionCount === null || typeof item.blockingContext.openTransactionCount === "number") && (item.blockingContext.commandLabel === null || typeof item.blockingContext.commandLabel === "string") && (item.blockingContext.commandPreview === null || typeof item.blockingContext.commandPreview === "string") && (item.blockingContext.participants === undefined || (Array.isArray(item.blockingContext.participants) && item.blockingContext.participants.every(blockingParticipantValid))) && (item.blockingContext.maxChainDepth === undefined || typeof item.blockingContext.maxChainDepth === "number") && (item.blockingContext.chainComplete === undefined || typeof item.blockingContext.chainComplete === "boolean")))
     && (item.diagnosticTools === undefined || (Array.isArray(item.diagnosticTools) && item.diagnosticTools.every((entry) => object(entry) && typeof entry.name === "string" && typeof entry.purpose === "string" && (entry.command === undefined || typeof entry.command === "string") && (entry.caution === undefined || typeof entry.caution === "string"))))
     && Array.isArray(item.evidence) && item.evidence.every((entry) => object(entry) && typeof entry.label === "string" && typeof entry.value === "string")
     && Array.isArray(item.references) && item.references.every((entry) => object(entry) && typeof entry.label === "string" && typeof entry.url === "string" && safeExternalUrl(entry.url) !== null);
   const countValid = (item: unknown): item is number => typeof item === "number" && Number.isSafeInteger(item) && item >= 0;
   const findingCapValid = (item: unknown) => object(item) && typeof item.ruleId === "string" && Boolean(item.ruleId.trim()) && countValid(item.retainedCount) && countValid(item.suppressedCount) && item.suppressedCount > 0 && item.order === "Descending diagnostic impact";
+  const guideSubjectValid = (item: unknown) => object(item) && typeof item.id === "string"
+    && (item.sessionId === null || typeof item.sessionId === "number") && (item.requestId === null || typeof item.requestId === "number")
+    && (item.lastObservedAt === null || typeof item.lastObservedAt === "string") && (item.lastStatus === null || typeof item.lastStatus === "string")
+    && (item.durationSeconds === null || typeof item.durationSeconds === "number" && Number.isFinite(item.durationSeconds) && item.durationSeconds >= 0)
+    && Array.isArray(item.resourceSummary) && item.resourceSummary.every((entry) => object(entry) && typeof entry.label === "string" && typeof entry.value === "string")
+    && typeof item.blockingObserved === "boolean" && typeof item.completion === "string" && typeof item.primaryEvidenceGap === "string";
+  const guideStepValid = (item: unknown) => object(item) && typeof item.id === "string" && countValid(item.order) && item.order > 0
+    && typeof item.title === "string" && typeof item.reason === "string" && ["Review", "Capture", "Upload", "Corroborate", "Deep Analysis"].includes(String(item.actionType))
+    && (item.condition === undefined || typeof item.condition === "string") && strings(item.expectedEvidence)
+    && (item.caution === undefined || typeof item.caution === "string") && (item.command === undefined || typeof item.command === "string" && item.command.length <= 20_000)
+    && strings(item.sourceFindingIds) && (item.targetFindingId === undefined || typeof item.targetFindingId === "string") && deepProfileTokenValid(item.deepAnalysisProfile);
+  const guideValid = report.investigationGuide === undefined || object(report.investigationGuide) && report.investigationGuide.schemaVersion === "1.0"
+    && typeof report.investigationGuide.conclusion === "string" && strings(report.investigationGuide.missingEvidence)
+    && Array.isArray(report.investigationGuide.subjects) && report.investigationGuide.subjects.length <= 10 && report.investigationGuide.subjects.every(guideSubjectValid)
+    && Array.isArray(report.investigationGuide.steps) && report.investigationGuide.steps.length <= 10 && report.investigationGuide.steps.every(guideStepValid)
+    && report.investigationGuide.steps.every((step, index) => object(step) && step.order === index + 1);
   const qualityValid = object(report.dataQuality) && strings(report.dataQuality.presentColumns) && strings(report.dataQuality.missingColumns) && strings(report.dataQuality.unknownColumns) && strings(report.dataQuality.warnings) && strings(report.dataQuality.notEvaluatedRules) && (report.dataQuality.suppressedSignals === undefined || strings(report.dataQuality.suppressedSignals)) && (report.dataQuality.findingCaps === undefined || Array.isArray(report.dataQuality.findingCaps) && report.dataQuality.findingCaps.every(findingCapValid));
   let thresholdProfile = report.thresholdProfile;
   try { if (thresholdProfile !== undefined) thresholdProfile = validateThresholdProfileSnapshotShape(thresholdProfile); }
@@ -241,7 +255,12 @@ export function validateReportShape(value: unknown): AnalysisReport {
     || !Array.isArray(report.records) || !report.records.every(recordValid)
     || !Array.isArray(report.plans) || !report.plans.every(planValid)
     || !Array.isArray(report.findings) || !report.findings.every(findingValid)
-    || !qualityValid) throw new Error("This is not a compatible SQL Evaluate report.");
+    || !qualityValid || !guideValid) throw new Error("This is not a compatible SQL Evaluate report.");
+  if (report.investigationGuide) {
+    const findingIds = new Set(report.findings.map((finding) => finding.id));
+    const guideIds = new Set(report.investigationGuide.steps.map((step) => step.id));
+    if (guideIds.size !== report.investigationGuide.steps.length || report.investigationGuide.steps.some((step) => step.sourceFindingIds.some((id) => !findingIds.has(id)) || step.targetFindingId && !findingIds.has(step.targetFindingId))) throw new Error("This is not a compatible SQL Evaluate report.");
+  }
   const statementOwners = new Map<string, string>();
   for (const plan of report.plans) for (const statement of plan.statements) statementOwners.set(statement.id, plan.id);
   for (const reportFinding of report.findings) {

@@ -60,7 +60,9 @@ foreach ($entry in $licenseFiles.GetEnumerator()) {
 $hashLines = Get-ChildItem -LiteralPath $stagingPath -File -Recurse |
     Sort-Object FullName |
     ForEach-Object {
-        $relativePath = [System.IO.Path]::GetRelativePath($stagingPath, $_.FullName).Replace('\', '/')
+        # GetRelativePath is unavailable in Windows PowerShell 5.1, which the
+        # distributed launcher supports. Every file is beneath $stagingPath.
+        $relativePath = $_.FullName.Substring($stagingPath.Length).TrimStart('\').Replace('\', '/')
         $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
         '{0} *{1}' -f $hash, $relativePath
     }

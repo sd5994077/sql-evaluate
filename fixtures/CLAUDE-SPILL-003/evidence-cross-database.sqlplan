@@ -1,0 +1,2 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan" Version="1.539"><BatchSequence><Batch><Statements><StmtSimple StatementText="SELECT synthetic SENTINEL_PRIVATE_9033" StatementType="SELECT" QueryStoreQueryId="9002" QueryStorePlanId="9102" DatabaseId="22"><QueryPlan DegreeOfParallelism="1"><RelOp NodeId="2" PhysicalOp="Index Scan" LogicalOp="Index Scan" EstimateRows="1" /></QueryPlan></StmtSimple></Statements></Batch></BatchSequence></ShowPlanXML>

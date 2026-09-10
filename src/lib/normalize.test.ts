@@ -55,6 +55,18 @@ describe("sp_WhoIsActive normalization", () => {
     expect((record as typeof record & { waitParseWarning?: string }).waitParseWarning).toMatch(/could not be parsed/i);
   });
 
+  it("rejects spreadsheet booleans and numeric values as wait types", () => {
+    expect(parseWait("OFF")).toBeNull();
+    expect(parseWait("ON")).toBeNull();
+    expect(parseWait(true)).toBeNull();
+    expect(parseWait(false)).toBeNull();
+    expect(parseWait(0)).toBeNull();
+    const [record] = normalizeRows("sample", [["session_id", "wait_info", "percent_complete"], [51, "OFF", 17.5]], 0);
+    expect(record.wait).toBeNull();
+    expect(record.waitParseWarning).toMatch(/could not be parsed/i);
+    expect(record.percentComplete).toBe(17.5);
+  });
+
   it("accepts optional whitespace around the documented native wait wrapper", () => {
     expect(parseWait("( 2x: 1,200ms / 1,800ms ) CXPACKET : nodeId=7")).toMatchObject({
       type: "CXPACKET",

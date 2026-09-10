@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ShowPlanXML Version="1.6" xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan">
+  <BatchSequence><Batch><Statements>
+    <StmtSimple StatementText="SELECT synthetic summary workload" StatementType="SELECT" PlanHandle="0xB200" SqlHandle="0xS200" QueryHash="0xQ200" QueryPlanHash="0xP200" StatementStartOffset="0" StatementEndOffset="240">
+      <QueryPlan DegreeOfParallelism="4">
+        <MemoryGrantInfo RequestedMemory="2097152" GrantedMemory="2097152" MaxUsedMemory="0" />
+        <RelOp NodeId="8" PhysicalOp="Hash Match" LogicalOp="Aggregate" EstimateRows="240000">
+          <Hash><RelOp NodeId="11" PhysicalOp="Index Scan" LogicalOp="Index Scan" EstimateRows="240000"><IndexScan><Object Schema="[dbo]" Table="[SummarySource]" Index="[IX_SummarySource]" /></IndexScan></RelOp></Hash>
+        </RelOp>
+      </QueryPlan>
+    </StmtSimple>
+  </Statements></Batch></BatchSequence>
+</ShowPlanXML>

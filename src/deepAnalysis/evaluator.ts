@@ -1,4 +1,5 @@
 import { incidentOverlap, matchQueryIdentity } from "./correlation";
+import { resolveCandidatePlan } from "./spillTriage";
 import type { DeepAnalysisCase, DeepCaptureAttempt, DeepCaseArtifact, DeepEvidenceAssertion, DeepEvidenceState } from "./types";
 
 function artifactsBySignal(deepCase: DeepAnalysisCase): Map<string, DeepCaseArtifact[]> {
@@ -37,8 +38,8 @@ function correlatedSignalArtifacts(deepCase: DeepAnalysisCase, signal: string, a
   });
 }
 
-function updateAssertion(item: DeepEvidenceAssertion, state: DeepEvidenceState, basis: string[], missingEvidence: string[], artifacts: DeepCaseArtifact[], occurredAt: string): DeepEvidenceAssertion {
-  const artifactIds = [...new Set([...item.artifactIds, ...artifacts.map((artifact) => artifact.id)])];
+function updateAssertion(item: DeepEvidenceAssertion, state: DeepEvidenceState, basis: string[], missingEvidence: string[], artifacts: DeepCaseArtifact[], occurredAt: string, replaceArtifacts = false): DeepEvidenceAssertion {
+  const artifactIds = [...new Set([...(replaceArtifacts ? [] : item.artifactIds), ...artifacts.map((artifact) => artifact.id)])];
   const transition = item.state === state ? [] : [{ occurredAt, from: item.state, to: state, reason: basis[0] ?? "Evidence state changed after reevaluation.", artifactIds: artifacts.map((artifact) => artifact.id) }];
   return {
     ...item,
@@ -86,6 +87,46 @@ export function evaluateDeepCase(deepCase: DeepAnalysisCase): DeepAnalysisCase {
     let basis = item.basis;
     let missing = item.missingEvidence;
     let artifacts: DeepCaseArtifact[] = [];
+
+    if (deepCase.profileId === "spill-triage" && item.id === "spill-candidates") {
+      const ranked = deepCase.spillTriage?.candidates.filter((candidate) => candidate.rank !== null) ?? [];
+      artifacts = deepCase.artifacts.filter((artifact) => ranked.some((candidate) => candidate.artifactId === artifact.id));
+      if (ranked.length) {
+        state = "Observed";
+        basis = [`${ranked.length} imported row${ranked.length === 1 ? " has" : "s have"} valid positive numeric spill evidence and a deterministic rank.`];
+        missing = [];
+      } else {
+        state = "Not Evaluated";
+        basis = deepCase.spillTriage?.candidates.length ? ["Imported spill rows are visible, but none has valid positive numeric spill evidence for ranking."] : [];
+        missing = ["A supported sp_BlitzCache row with valid positive spill pages"];
+      }
+      return updateAssertion(item, state, basis, missing, artifacts, deepCase.updatedAt, true);
+    }
+
+    if (deepCase.profileId === "spill-triage" && item.id === "plan-captured") {
+      const selected = deepCase.spillTriage?.candidates.find((candidate) => candidate.id === deepCase.spillTriage?.selectedCandidateId) ?? deepCase.spillTriage?.candidates[0];
+      const manual = selected ? deepCase.spillTriage?.manualPlanSelections.find((selection) => selection.candidateId === selected.id) : undefined;
+      const resolution = selected && deepCase.spillTriage ? resolveCandidatePlan(selected, deepCase.spillTriage.plans, manual) : null;
+      artifacts = deepCase.artifacts.filter((artifact) => artifact.id === resolution?.evidence?.artifactId);
+      if (resolution?.connected && resolution.selectionMethod === "automatic" && resolution.quality === "Exact") {
+        state = "Observed";
+        basis = ["A unique Showplan statement has an exact, non-conflicting stable-identity match to the selected spill candidate."];
+        missing = [];
+      } else if (resolution?.connected && resolution.selectionMethod === "manual") {
+        state = "Supported";
+        basis = ["A user selected one statement from equally strong, non-conflicting stable-identity matches; the selection does not upgrade the underlying identity quality."];
+        missing = ["A unique statement-level identifier, such as matching sql_handle offsets"];
+      } else if (resolution?.connected) {
+        state = "Supported";
+        basis = ["A unique Showplan statement has a Strong stable-identity match to the selected spill candidate."];
+        missing = ["An Exact statement-level identity match"];
+      } else {
+        state = "Not Evaluated";
+        basis = resolution ? [resolution.blockedByConflict ? "Showplan evidence conflicts with a supplied stable identifier, so automatic connection is blocked." : resolution.ambiguous ? "Multiple Showplan statements share the best stable-identity match, so no statement was selected automatically." : "No supplied Showplan has a unique Exact or Strong stable-identity match to the selected candidate."] : [];
+        missing = [resolution?.blockedByConflict ? "Non-conflicting plan evidence" : resolution?.ambiguous ? "A manual choice among the displayed non-conflicting matches or a unique statement-level identifier" : "A cached or actual Showplan with matching stable identity"];
+      }
+      return updateAssertion(item, state, basis, missing, artifacts, deepCase.updatedAt, true);
+    }
 
     if (item.id === "scheduler-pressure") {
       const sustained = usable("scheduler-pressure-sustained");
@@ -220,13 +261,14 @@ export function evaluateDeepCase(deepCase: DeepAnalysisCase): DeepAnalysisCase {
   const causal = assertions.find((item) => item.id === "causal-theory");
   const plan = assertions.find((item) => item.id === "plan-captured");
   const genericNextCheck = causal?.missingEvidence[0] ?? facts.find((item) => item.state === "Not Evaluated")?.missingEvidence[0] ?? "Repeat the bounded evidence capture to test persistence.";
+  const spillSelected = deepCase.profileId === "spill-triage" ? deepCase.spillTriage?.candidates.find((candidate) => candidate.id === deepCase.spillTriage?.selectedCandidateId) ?? deepCase.spillTriage?.candidates[0] : undefined;
   const narrative = {
-    headline: deepCase.profileId === "cpu-backed-blocking" ? causal?.state === "Supported" ? "Evidence supports a CPU-amplified blocking cascade" : "The blocking incident is visible; the wider cause remains incomplete" : causal?.state === "Supported" ? `Evidence supports the ${deepCase.title.toLowerCase()} theory` : `${deepCase.title} evidence remains incomplete`,
+    headline: deepCase.profileId === "spill-triage" ? spillSelected?.rank ? `Rank ${spillSelected.rank} is the highest-priority imported spill candidate` : "Spill evidence is present but cannot yet be ranked" : deepCase.profileId === "cpu-backed-blocking" ? causal?.state === "Supported" ? "Evidence supports a CPU-amplified blocking cascade" : "The blocking incident is visible; the wider cause remains incomplete" : causal?.state === "Supported" ? `Evidence supports the ${deepCase.title.toLowerCase()} theory` : `${deepCase.title} evidence remains incomplete`,
     established: facts.filter((item) => item.state === "Observed").map((item) => item.statement),
     supported: facts.filter((item) => item.state === "Supported").map((item) => item.statement),
     contradicted: facts.filter((item) => item.state === "Contradicted").map((item) => item.statement),
     unanswered: facts.filter((item) => item.state === "Not Evaluated").map((item) => `${item.label}: ${item.missingEvidence[0] ?? "More evidence is required."}`),
-    nextCheck: deepCase.profileId === "cpu-backed-blocking" ? plan?.state !== "Observed" ? "Capture a plan with a stable identity match to the root statement." : causal?.missingEvidence[0] ?? "Repeat the incident capture to test persistence." : genericNextCheck,
+    nextCheck: deepCase.profileId === "spill-triage" ? plan?.state === "Observed" ? "Review the matched plan while preserving the distinction between compile-time and runtime evidence." : plan?.missingEvidence[0] ?? "Import a Showplan with stable identity." : deepCase.profileId === "cpu-backed-blocking" ? plan?.state !== "Observed" ? "Capture a plan with a stable identity match to the root statement." : causal?.missingEvidence[0] ?? "Repeat the incident capture to test persistence." : genericNextCheck,
   };
   const artifactIds = deepCase.artifacts.map((artifact) => artifact.id);
   const recognizedCount = deepCase.artifacts.filter((artifact) => artifact.signals.length).length;

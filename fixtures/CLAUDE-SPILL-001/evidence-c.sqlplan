@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ShowPlanXML Version="1.6" xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan">
+  <BatchSequence><Batch><Statements>
+    <StmtSimple StatementText="SELECT synthetic account workload" StatementType="SELECT" PlanHandle="0xC999" SqlHandle="0xS399" QueryHash="0xQ300" QueryPlanHash="0xP999" StatementStartOffset="0" StatementEndOffset="120">
+      <QueryPlan DegreeOfParallelism="2">
+        <RelOp NodeId="5" PhysicalOp="Nested Loops" LogicalOp="Inner Join" EstimateRows="5000">
+          <NestedLoops><RelOp NodeId="6" PhysicalOp="Index Seek" LogicalOp="Index Seek" EstimateRows="5000"><IndexScan><Object Schema="[dbo]" Table="[AccountSource]" Index="[IX_AccountSource]" /></IndexScan></RelOp></NestedLoops>
+        </RelOp>
+      </QueryPlan>
+    </StmtSimple>
+  </Statements></Batch></BatchSequence>
+</ShowPlanXML>

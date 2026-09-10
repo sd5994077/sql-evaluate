@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { BlockingContext, Finding } from "../types";
+import type { BlockingContext, Finding, InvestigationStep } from "../types";
 import { safeExternalUrl } from "../lib/report";
 import { formatDuration, formatNumber } from "../lib/utils";
 import { SeverityBadge } from "./SeverityBadge";
@@ -69,7 +69,7 @@ function InvestigationContext({ finding, related, copiedCommand, onCopy, onSelec
   </section>;
 }
 
-export function FindingDrawer({ finding, relatedFindings = [], onSelectFinding, onDeepAnalysis, onShowActivity, onClose }: { finding: Finding | null; relatedFindings?: Finding[]; onSelectFinding?(finding: Finding): void; onDeepAnalysis?(finding: Finding): void; onShowActivity?(finding: Finding): void; onClose(): void }) {
+export function FindingDrawer({ finding, guideStep, relatedFindings = [], onSelectFinding, onDeepAnalysis, onShowActivity, onShowGuide, onClose }: { finding: Finding | null; guideStep?: Pick<InvestigationStep, "order" | "title">; relatedFindings?: Finding[]; onSelectFinding?(finding: Finding): void; onDeepAnalysis?(finding: Finding): void; onShowActivity?(finding: Finding): void; onShowGuide?(): void; onClose(): void }) {
   const drawer = useRef<HTMLElement>(null);
   const [copiedCommand, setCopiedCommand] = useState<string | null>(null);
   useEffect(() => {
@@ -119,6 +119,7 @@ export function FindingDrawer({ finding, relatedFindings = [], onSelectFinding, 
       <div className="eyebrow">{finding.ruleId} · {finding.category}</div>
       <h2 id="finding-title">{finding.title}</h2>
       <p className="lead">{finding.summary}</p>
+      {guideStep && onShowGuide && <button type="button" className="guide-return" onClick={onShowGuide}>Back to investigation step {guideStep.order}: {guideStep.title} →</button>}
       {onDeepAnalysis && deepProfile && <button className="deep-launch" onClick={() => onDeepAnalysis(finding)}>Open {profileLabel(deepProfile)} Deep Analysis →</button>}
       {onShowActivity && finding.affectedRecordIds.length > 0 && <button type="button" className="activity-launch" onClick={() => onShowActivity(finding)}>Show {finding.affectedRecordIds.length} affected activity row{finding.affectedRecordIds.length === 1 ? "" : "s"} →</button>}
       {finding.blockingContext && <BlockingContextPanel context={finding.blockingContext} />}

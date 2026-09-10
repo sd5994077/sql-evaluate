@@ -7,6 +7,17 @@ export default defineConfig({
   build: {
     target: "es2022",
     sourcemap: false,
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          groups: [{
+            name: "react-vendor",
+            test: /node_modules[\\/](?:react|react-dom|scheduler)[\\/]/,
+            priority: 20,
+          }],
+        },
+      },
+    },
   },
   test: {
     environment: "node",

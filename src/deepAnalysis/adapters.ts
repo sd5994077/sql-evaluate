@@ -46,7 +46,7 @@ function firstIndex(headers: string[], aliases: string[]): number {
   return -1;
 }
 
-function identityFromRow(headers: string[], row: unknown[]): DeepQueryIdentity {
+export function identityFromRow(headers: string[], row: unknown[]): DeepQueryIdentity {
   const value = (aliases: string[]) => {
     const index = firstIndex(headers, aliases);
     return index < 0 ? null : row[index];
@@ -90,7 +90,8 @@ function blitzSignalsInText(text: string): string[] {
 function recognizedBlitzCache(headers: string[], text: string): boolean {
   const warning = firstIndex(headers, ["warnings", "warning", "findings", "blitzcache_info"]);
   const identity = firstIndex(headers, ["query_hash", "sql_handle", "plan_handle", "query_plan", "database_name", "executions"]);
-  return (warning >= 0 && identity >= 0) || text.includes("sp_blitzcache") || text.includes("plan cache instability");
+  const spills = firstIndex(headers, ["total_spills", "totalspills", "avg_spills", "average_spills", "min_spills", "max_spills"]);
+  return ((warning >= 0 || spills >= 0) && identity >= 0) || text.includes("sp_blitzcache") || text.includes("plan cache instability");
 }
 
 export function inspectEvidenceMatrix(matrix: unknown[][], rootSessionId: number | null, artifactId: string): MatrixInspection {
@@ -300,8 +301,13 @@ export function inspectEvidenceMatrix(matrix: unknown[][], rootSessionId: number
       const warningText = warningColumn >= 0 ? nullableText(row[warningColumn]) : null;
       const rowSignals = blitzSignalsInText(row.map((item) => String(item ?? "")).join(" "));
       if (warningText || rowSignals.length) observations.push(observation(artifactId, observationIndex++, "BlitzCache", "warning", warningText ?? rowSignals.join(", "), isoLike(value(row, "captured_at", "collection_time")), "Direct", identity, undefined, undefined, rowSignals));
+      const totalSpills = numeric(value(row, "total_spills", "totalspills"));
+      const averageSpills = numeric(value(row, "avg_spills", "average_spills"));
+      if (totalSpills !== null) observations.push(observation(artifactId, observationIndex++, "BlitzCache", "total_spill_pages", totalSpills, isoLike(value(row, "last_execution", "captured_at", "collection_time")), "Direct", identity, "8 KB pages"));
+      if (averageSpills !== null) observations.push(observation(artifactId, observationIndex++, "BlitzCache", "average_spill_pages", averageSpills, isoLike(value(row, "last_execution", "captured_at", "collection_time")), "Direct", identity, "8 KB pages/execution"));
+      if ((totalSpills ?? 0) > 0 || (averageSpills ?? 0) > 0) signals.add("spill-evidence");
     });
-    details.push(`Recognized BlitzCache signals: ${matched.map(([term]) => term).join(", ") || "none"}.`);
+    details.push(`Recognized BlitzCache signals: ${matched.map(([term]) => term).join(", ") || (signals.has("spill-evidence") ? "numeric spill evidence" : "none")}.`);
   }
 
   const planCountIndex = column("plan_count", "total_plan_count");

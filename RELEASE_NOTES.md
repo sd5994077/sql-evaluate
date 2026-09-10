@@ -1,6 +1,104 @@
-# SQL Evaluate 1.3.0
+# SQL Evaluate 1.6.0 - 2026-09-07
+
+Version 1.6.0 adds a portable Investigation History workspace for recurring row-estimate and statistics observations across sensitive case archives. It also adds structured Showplan object/statistics identity, server-specific verification, and a reusable multi-server Ola Hallengren preview that defaults to report-only mode.
+
+SQL Evaluate remains offline and file-only. It does not connect to SQL Server, execute generated SQL, silently retain history, or treat recurrence as proof of root cause.
+
+# SQL Evaluate 1.5.1
+
+Release date: 2026-09-07
+
+## Plan-evidence correlation fixes
+
+- A validated Query Store sidecar no longer lets an embedded Showplan statement `sql_handle` override its database/query/plan provenance. A contradictory plan handle still blocks automatic correlation.
+- Spill Triage uses actual-plan evidence before cached/estimated evidence, and cached/estimated evidence before retained compile-only Query Store evidence, when stable identities agree. Equal-strength evidence of the same kind remains an explicit ambiguity.
+- Verified with 304 automated tests passing, one intentional skip, a passing production build, and 13 passing guarded live-lab browser checks with no browser console errors.
+
+# SQL Evaluate 1.5.0
+
+Release date: 2026-09-05
+
+## Safer investigation workflows
+
+- Preview fresh captures, plans, and Deep Analysis evidence before applying them. Review recognized evidence, available timestamps, worksheets, and file-specific warnings; exclude files and correct the main activity worksheet.
+- Choose a new analysis or add to the current analysis when original inputs remain in the session. Confirmed analysis uses the prepared data and preserves worksheet choices.
+- Protect reports and working cases with download-state indicators, replacement choices, and browser leave warnings. Failed or cancelled downloads preserve current work.
+- Edit case title, ticket reference, notes, and Investigating / Waiting for evidence / Closed status. Human tracking does not change diagnostic conclusions.
+- Working-case schema 1.5 retains private tracking fields. Schemas 1.0–1.4 still open with defaults. Use SQL Evaluate 1.5.0 or later to open newly saved cases.
+- Handwritten title, ticket reference, and notes stay in sensitive working-case ZIPs and are omitted from redacted handoffs.
+- Download prepared means the browser download was initiated, not that disk storage was verified. Check browser downloads before closing the app.
+
+SQL Evaluate remains standalone and file-only. No database connection, command execution, telemetry, or AI integration was added.
+
+# SQL Evaluate 1.4.2
+
+Release date: 2026-09-03
+
+## Capability and plan-correlation fixes
+
+- Updated `fflate` to 0.8.3 to address the ZIP64 parsing denial-of-service advisory.
+
+- Corrected capability-snapshot SQL generation and multi-statement plan provenance correlation.
+- Exact result-row plan provenance now takes precedence over a divergent embedded statement SQL handle when the plan handle agrees; contradictory plan handles continue to block automatic merging.
+
+# SQL Evaluate 1.4.1
+
+Release date: 2026-09-03
+
+## Actual-plan evidence selection
+
+- When an actual plan and a cached/estimated plan share the same strongest stable identity, Spill Triage now automatically uses the actual plan for its runtime evidence. Equally strong alternatives of the same evidence kind still require an explicit choice.
+- Added an end-to-end offline workflow test covering candidate ranking, capability routing, cached-plan provenance, and last-known actual-plan import.
+
+# SQL Evaluate 1.4.0
+
+Release date: 2026-09-03
+
+## Version-aware diagnostics and plan provenance
+
+- Added a manual, importable capability snapshot for SQL Server version, edition, database, effective visibility permissions, existing plan-history features, and installed diagnostic signatures.
+- Added a curated diagnostic catalog spanning supported First Responder Kit procedures, `sp_WhoIsActive`, read-only Ola Hallengren history, and minimal native DMV fallbacks.
+- Added a capability-aware Spill Triage evidence ladder: exact cached-plan provenance, already-enabled last-known actual plans, existing Query Store, controlled actual capture, and approved Extended Events.
+- Added plan-with-provenance CSV/XLSX import. Stable identity from the same result row can enrich one unambiguous Showplan statement; conflicts are preserved and never overwritten.
+- Added a bounded Query Store retrieval process that exports one row per retained plan with database-scoped IDs, Query Store hashes, the persisted compile plan, and weighted runtime aggregates; it explicitly notes that newly enabled Query Store has no earlier history.
+- Added Deep Analysis schema 1.4 migration, accessible availability/safety status, and tests for SQL Server 2022 Standard, disabled features, stale snapshots, missing permissions, and conflicting identities.
+
+## SQL Evaluate 1.3.2
+
+Release date: 2026-09-02
+
+## Visible plan and profile import outcomes
+
+- Moved plan-import outcomes to Spill Triage Stage 2, where malformed or unusable Showplans now appear as direct, file-specific red errors instead of looking like a no-op; non-plan evidence failures remain visible at the workspace level.
+- Kept valid but uncorrelatable plans amber, duplicates informational, and moved keyboard focus to the current outcome after an import.
+- Moved threshold-profile previews and import results beside the profile controls, added accessible focus and severity treatment, and clarified that profiles are stored but never activated automatically.
+- Recognize a re-imported copy of the exact bundled profile as already available instead of leaving a hidden reserved-namespace failure; a conflicting bundled profile remains blocked.
+
+## SQL Evaluate 1.3.1
+
+Release date: 2026-09-02
+
+## Plan-import clarity and status treatment
+
+- Added privacy-safe, file-specific diagnostics for empty, unsupported, duplicate, escaped, malformed, incorrectly encoded, and identity-free Showplan uploads.
+- Distinguished plan-correlation information, warnings, and errors with explicit text, icons, accessible live-region roles, and blue, amber, or red treatments that do not rely on color alone.
+- Clarified when a valid imported Showplan lacks the stable identifiers needed to connect it automatically to a `sp_BlitzCache` candidate.
+
+## SQL Evaluate 1.3.0
 
 Release date: 2026-08-28
+
+## Spill Triage update — 2026-09-02
+
+- Added a fully offline two-stage Spill Triage workflow for version-tolerant CSV/XLSX `sp_BlitzCache` spill exports.
+- Added deterministic cumulative and per-execution spill comparisons with explicit top-N, missing-value, malformed-value, and plan-variant disclosures.
+- Added stable-identity-only connection to cached or actual Showplans. Estimated plans remain compile-only; actual plans can show spilling operator nodes, tempdb pages, grant details, and upstream row-estimate errors.
+- Kept `Remove Plan Handle From Cache` source text behind a warning and out of routine next actions. SQL Evaluate still never executes SQL or changes cache state.
+- Added Deep Analysis case schema 1.3, migration from schemas 1.0–1.2, persisted and revalidated manual statement choices, sanitized multi-shape fixtures, and accessible candidate-table interactions.
+- Incorporated the second blind review: explicit byte/KiB/MiB/GiB spill units now convert transparently to 8 KB pages; workbook selection, header position, zero values, and identity conflicts are disclosed; candidate controls have unique accessible names; and actual-plan DOP, spill threads, and tempdb files are visible.
+- Completed the post-review hardening: redacted handoffs now come from a structurally separate allowlist and cannot be reopened as working cases; Query Store matching is database-scoped; unrelated plans cannot supply misleading conflicts; duplicate files are removed before parsing; embedded plans honor detected header rows; and ambiguous strong statement matches can be explicitly selected and cleared.
+- Added a third blind fixture that plants private sentinels and tests unit contradictions, duplicate plans, cross-database identity, ambiguity, persistence, and all three handoff formats.
+- Verification completed with 251 passing tests, 1 intentional skip, a clean production type-check/build, zero audited vulnerabilities, and a 375×812 headless pass with no overflow, console errors, or non-local traffic.
 
 ## Post-review correctness update — 2026-08-29
 

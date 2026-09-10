@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AnalysisReport, Finding, WhoIsActiveRecord } from "./types";
 import App from "./App";
@@ -70,10 +70,53 @@ async function storeClone(id: string, name: string): Promise<void> {
   fireEvent.change(screen.getByLabelText("Profile ID"), { target: { value: id } });
   fireEvent.change(screen.getByLabelText("Profile name"), { target: { value: name } });
   fireEvent.click(screen.getByRole("button", { name: "Store clone" }));
-  await waitFor(() => expect(screen.getByText(new RegExp(`Stored ${name}`))).toBeTruthy());
+  await waitFor(() => expect(screen.getByRole("status", { name: /success: profile stored/i })).toBeTruthy());
 }
 
 describe("analysis navigation", () => {
+  it("starts a manual Spill Triage case from the landing page", async () => {
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Start Spill Triage" }));
+    expect(await screen.findByRole("heading", { name: "Spill Triage" })).toBeTruthy();
+    expect(screen.getByText(/stage 1 \/ candidate selection/i)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Import BlitzCache export" })).toBeTruthy();
+    expect(document.querySelector('[data-testid="spill-triage-evidence-input"]')).toBeInstanceOf(HTMLInputElement);
+    expect(screen.getByRole("button", { name: "JSON" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "CSV" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Print HTML" })).toBeTruthy();
+    expect(screen.getByText(/not reopenable/i)).toBeTruthy();
+  });
+
+  it("shows a rejected Showplan beside the Spill Triage matching-plan action", async () => {
+    const { container } = render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Start Spill Triage" }));
+    const evidenceInput = container.querySelector<HTMLInputElement>('[data-testid="spill-triage-evidence-input"]')!;
+    fireEvent.change(evidenceInput, { target: { files: [new File(["Total Spills,Plan Handle\n100,0xAAA\n"], "blitz-spills.csv", { type: "text/csv" })] } });
+    await waitFor(() => expect((screen.getByRole("button", { name: "Import selected evidence" }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByRole("button", { name: "Import selected evidence" }));
+    expect(await screen.findByRole("button", { name: "Choose matching plan" })).toBeTruthy();
+
+    fireEvent.change(evidenceInput, { target: { files: [new File(["not a Showplan"], "blitzcache-plan.sqlplan", { type: "application/xml" })] } });
+
+    await waitFor(() => expect((screen.getByRole("button", { name: "Import selected evidence" }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByRole("button", { name: "Import selected evidence" }));
+    const error = await screen.findByRole("alert", { name: /error: plan import failed/i });
+    expect(within(error).getByText(/blitzcache-plan\.sqlplan/i)).toBeTruthy();
+  });
+
+  it("shows non-plan import errors inside the Spill Triage workspace", async () => {
+    const { container } = render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Start Spill Triage" }));
+    const evidenceInput = container.querySelector<HTMLInputElement>('[data-testid="spill-triage-evidence-input"]')!;
+
+    fireEvent.change(evidenceInput, { target: { files: [new File([], "empty-blitzcache.csv", { type: "text/csv" })] } });
+
+    const error = await screen.findByRole("dialog", { name: "Review imported files" });
+    await within(error).findByText(/file is empty and was not imported/i);
+    expect(within(error).getByText(/empty-blitzcache\.csv/i)).toBeTruthy();
+    expect(within(error).getByText(/file is empty and was not imported/i)).toBeTruthy();
+  });
+
   it("warns that profile names are disclosed in default exports", async () => {
     render(<App />);
     expect(await screen.findByText(/profile names appear in reports and default exports/i)).toBeTruthy();
@@ -122,6 +165,47 @@ describe("analysis navigation", () => {
     expect(screen.getByText("1 item needs priority review")).toBeTruthy();
   });
 
+  it("derives a progressive guide for an older report and opens its source evidence", async () => {
+    const { container } = render(<App />);
+    const resource = { ...finding(["r1"]), id: "resource-finding", ruleId: "WIA-RESOURCE", severity: "High" as const, title: "Sustained resource consumer", nextCapture: { title: "Capture resource deltas", reason: "Confirm measured growth.", command: "EXEC dbo.sp_WhoIsActive @delta_interval = 5;", expectedEvidence: ["CPU and I/O rates"], caution: "Capture briefly." } };
+    const transaction = { ...finding(["r1"]), id: "transaction-finding", ruleId: "WIA-TRANSACTION", title: "Open-transaction activity", nextCapture: { title: "Capture transaction ownership", reason: "Confirm ownership.", expectedEvidence: ["Transaction start"] } };
+    await uploadSavedReport(container, report("guided.csv", [record("r1", 51)], [resource, transaction]), "guided.sqleval.json");
+
+    expect(screen.getByRole("heading", { name: "Start here" })).toBeTruthy();
+    expect(screen.getByText("Capture short resource deltas and the execution plan")).toBeTruthy();
+    const followups = screen.getByText(/Show 1 follow-up step/i).closest("details")!;
+    expect(followups.hasAttribute("open")).toBe(false);
+    fireEvent.click(followups.querySelector("summary")!);
+    expect(followups.hasAttribute("open")).toBe(true);
+    fireEvent.click(screen.getAllByRole("button", { name: "Open evidence" })[0]);
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Sustained resource consumer" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Back to investigation step 1/i }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(document.activeElement?.id).toBe("investigation-guide");
+  });
+
+  it("labels an unsupported imported Deep Analysis profile without exposing a dead action", async () => {
+    const { container } = render(<App />);
+    const resource = { ...finding(["r1"]), id: "resource-finding", ruleId: "WIA-RESOURCE", severity: "High" as const, title: "Sustained resource consumer" };
+    const guided: AnalysisReport = {
+      ...report("future-guide.csv", [record("r1", 51)], [resource]),
+      investigationGuide: {
+        schemaVersion: "1.0",
+        conclusion: "Review imported guidance.",
+        missingEvidence: [],
+        subjects: [],
+        steps: [{ id: "guide-step-1", order: 1, title: "Future workflow", reason: "This report references a newer workflow.", actionType: "Deep Analysis", expectedEvidence: [], sourceFindingIds: [resource.id], targetFindingId: resource.id, deepAnalysisProfile: "future-profile" }],
+      },
+    };
+    await uploadSavedReport(container, guided, "future-guide.sqleval.json");
+
+    const guide = screen.getByRole("heading", { name: "Start here" }).closest("section")!;
+    expect(within(guide).getByText("Deep Analysis unavailable")).toBeTruthy();
+    expect(within(guide).getByText(/not available in this app version/i)).toBeTruthy();
+    expect(within(guide).queryByRole("button", { name: "Deep Analysis" })).toBeNull();
+  });
+
   it("previews and stores an imported profile without activating it", async () => {
     const { container } = render(<App />);
     await waitFor(() => expect((screen.getByLabelText("Active profile") as HTMLSelectElement).disabled).toBe(false));
@@ -131,7 +215,7 @@ describe("analysis navigation", () => {
     await waitFor(() => expect(screen.getByText("IMPORT PREVIEW / NOT ACTIVE")).toBeTruthy());
     expect((screen.getByLabelText("Active profile") as HTMLSelectElement).selectedOptions[0].textContent).toMatch(/published defaults/i);
     fireEvent.click(screen.getByRole("button", { name: "Store profile" }));
-    await waitFor(() => expect(screen.getByText(/Stored Imported DBA profile/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole("status", { name: /success: profile stored/i })).toBeTruthy());
     expect((screen.getByLabelText("Active profile") as HTMLSelectElement).selectedOptions[0].textContent).toMatch(/published defaults/i);
     expect(window.localStorage.getItem("sql-evaluate.threshold-profiles.v1")).not.toMatch(/records|findings|sql_text/i);
   });
@@ -195,7 +279,11 @@ describe("analysis navigation", () => {
       onmessage: ((event: MessageEvent) => void) | null = null;
       onerror: ((event: ErrorEvent) => void) | null = null;
       onmessageerror: (() => void) | null = null;
-      postMessage(value: unknown) { posted = value; }
+      postMessage(value: unknown) {
+        posted = value;
+        const request = value as { type: string; requestId: number };
+        if (request.type === "prepare") queueMicrotask(() => this.onmessage?.({ data: { type: "prepared", requestId: request.requestId, previews: [{ id: "0", fileName: "capture.csv", size: 10, kind: "Activity capture", usable: true, count: 1, countLabel: "rows", worksheets: [], recognized: ["session_id"], missing: [], warnings: [], firstCapturedAt: null, lastCapturedAt: null }] } } as MessageEvent));
+      }
       terminate() { /* no-op */ }
     }
     vi.stubGlobal("Worker", FakeWorker);
@@ -208,6 +296,7 @@ describe("analysis navigation", () => {
     const captureInput = container.querySelector<HTMLInputElement>('input[type="file"][multiple]')!;
     fireEvent.change(captureInput, { target: { files: [new File(["session_id\n51\n"], "capture.csv", { type: "text/csv" })] } });
     await waitFor(() => expect(posted).toBeTruthy());
+    fireEvent.click(await screen.findByRole("button", { name: "Analyze selected files" }));
     expect((posted as { thresholdProfile: { id: string; digest: string } }).thresholdProfile).toMatchObject({ id: "dba.worker", digest: expect.stringMatching(/^[a-f0-9]{64}$/) });
   });
 });

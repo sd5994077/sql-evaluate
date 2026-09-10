@@ -20,6 +20,10 @@ private-answer-key/
 *.log
 *.tsbuildinfo
 
+# Local scratch artifacts.
+.tmp-*.png
+.stage-*.patch
+
 # Editor and operating-system metadata.
 .DS_Store
 Thumbs.db

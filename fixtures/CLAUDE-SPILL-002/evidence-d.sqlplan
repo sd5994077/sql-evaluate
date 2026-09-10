@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan" Version="1.539" Build="16.0.4165.4">
+  <BatchSequence><Batch><Statements>
+    <StmtSimple StatementText="SELECT synthetic echo branch one" StatementType="SELECT" PlanHandle="0xE701" SqlHandle="0xE700" StatementStartOffset="0" StatementEndOffset="120" QueryHash="0xE701" QueryPlanHash="0xE7A" DatabaseId="11" RetrievedFromCache="true">
+      <QueryPlan DegreeOfParallelism="1"><RelOp NodeId="1" PhysicalOp="Index Scan" LogicalOp="Index Scan" EstimateRows="100" /></QueryPlan>
+    </StmtSimple>
+    <StmtSimple StatementText="SELECT synthetic echo branch two" StatementType="SELECT" PlanHandle="0xE702" SqlHandle="0xE700" StatementStartOffset="122" StatementEndOffset="260" QueryHash="0xE702" QueryPlanHash="0xE7B" DatabaseId="11" RetrievedFromCache="true">
+      <QueryPlan DegreeOfParallelism="1"><RelOp NodeId="2" PhysicalOp="Index Seek" LogicalOp="Index Seek" EstimateRows="100" /></QueryPlan>
+    </StmtSimple>
+  </Statements></Batch></BatchSequence>
+</ShowPlanXML>

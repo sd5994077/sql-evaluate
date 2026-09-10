@@ -6,7 +6,7 @@ const actualPlan = `<?xml version="1.0" encoding="utf-8"?>
  <BatchSequence><Batch><Statements><StmtSimple StatementText="SELECT * FROM dbo.Fact" StatementType="SELECT" StatementSubTreeCost="9">
   <QueryPlan><MemoryGrantInfo RequestedMemory="800000" GrantedMemory="800000" MaxUsedMemory="50000" />
    <RelOp NodeId="1" PhysicalOp="Hash Match" LogicalOp="Inner Join" EstimateRows="1000" EstimatedTotalSubtreeCost="9">
-    <Warnings SpillToTempDb="1"><HashSpillDetails GrantedMemoryKb="1024" /></Warnings>
+     <Warnings SpillToTempDb="1"><HashSpillDetails SpillLevel="1" SpilledThreadCount="2" TempdbFileCount="6" GrantedMemoryKb="2751080" UsedMemoryKb="2751080" WritesToTempDb="158870" ReadsFromTempDb="158870" /></Warnings>
     <RunTimeInformation><RunTimeCountersPerThread Thread="0" ActualRows="200000" /></RunTimeInformation>
    </RelOp>
   </QueryPlan>
@@ -47,6 +47,7 @@ describe("Showplan parser", () => {
     expect(plan.statements).toHaveLength(1);
     expect(plan.statements[0].operators[0].actualRows).toBe(200000);
     expect(plan.statements[0].operators[0].warnings).toContain("Spill to tempdb");
+    expect(plan.statements[0].operators[0].spillDetails?.[0]).toMatchObject({ kind: "Hash", spillLevel: 1, spilledThreadCount: 2, tempdbFileCount: 6, pagesWritten: 158870, pagesRead: 158870, grantedMemoryKb: 2751080 });
     expect(plan.statements[0].memoryGrant?.grantedKb).toBe(800000);
   });
 
@@ -55,15 +56,23 @@ describe("Showplan parser", () => {
     expect(() => parseShowplan("<!DOCTYPE x><ShowPlanXML />", "source", "x.xml")).toThrow(/DOCTYPE/);
   });
 
+  it("explains common privacy-safe Showplan import failures", () => {
+    expect(() => parseShowplan("", "source", "empty.sqlplan")).toThrow(/empty/i);
+    expect(() => parseShowplan("&lt;ShowPlanXML&gt;", "source", "escaped.sqlplan")).toThrow(/escaped Showplan XML/i);
+    expect(() => parseShowplan("\u0000<\u0000S\u0000h\u0000o\u0000w\u0000P\u0000l\u0000a\u0000n", "source", "encoding.sqlplan")).toThrow(/encoding/i);
+  });
+
   it("keeps runtime evidence, warnings, and object names scoped to their operator", () => {
     const plan = parseShowplan(nestedPlan, "source", "nested.sqlplan");
     const [parent, child, scan] = plan.statements[0].operators;
     expect(parent.actualRows).toBe(1);
     expect(parent.warnings).toEqual([]);
     expect(parent.objectName).toBeUndefined();
+    expect(parent.childNodeIds).toEqual([2]);
     expect(child.actualRows).toBe(200000);
     expect(child.warnings).toContain("Runtime spill");
     expect(child.objectName).toBeUndefined();
+    expect(child.childNodeIds).toEqual([3]);
     expect(scan.objectName).toBe("[dbo].[Fact].[IX_Fact]");
   });
 

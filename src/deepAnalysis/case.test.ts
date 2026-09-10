@@ -1,8 +1,9 @@
 import { File } from "node:buffer";
 import { describe, expect, it } from "vitest";
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
+import * as XLSX from "xlsx";
 import type { AnalysisReport, Finding } from "../types";
-import { addEvidenceFiles, createCpuBlockingCase, createDeepAnalysisCase, createDeepCaseArchive, openDeepCaseArchive } from "./case";
+import { addEvidenceFiles, createCpuBlockingCase, createDeepAnalysisCase, createDeepCaseArchive, createSpillTriageCase, openDeepCaseArchive } from "./case";
 import { cpuBlockingCollectionCommand, extendedEventsShowplanCommand, lastKnownActualPlanCommand, queryStoreExportCommand } from "./profile";
 
 const blockingFinding: Finding = {
@@ -175,15 +176,124 @@ describe("deep analysis cases", () => {
     expect(reopened.deepCase.artifacts[0].sha256).toMatch(/^[a-f0-9]{64}$/);
   });
 
+  it("rejects malformed capability routing data in an otherwise hash-valid case", async () => {
+    const capability = new File([
+      "adapter_id,schema_version,captured_at,product_version,edition,database_id,database_name,last_query_plan_stats,query_store_state,view_server_state,view_server_performance_state,view_database_state,view_database_performance_state,tool_id,tool_name,installed,compatible_signature\nSQL_EVALUATE_CAPABILITIES_V1,1.0,2026-09-03T12:00:00Z,16.0.4215.2,Standard Edition,7,Clinical,OFF,READ_WRITE,0,1,0,1,frk-blitzcache,sp_BlitzCache,1,1\n",
+    ], "capability.csv", { type: "text/csv" });
+    const imported = await addEvidenceFiles(createSpillTriageCase("2026-09-03T12:00:00Z", "capability-case"), [capability], "2026-09-03T12:01:00Z");
+    const archive = await createDeepCaseArchive(imported.deepCase, [capability], "2026-09-03T12:02:00Z");
+    const validCopy = new Uint8Array(archive.bytes.byteLength); validCopy.set(archive.bytes);
+    const valid = await openDeepCaseArchive(new File([validCopy.buffer], archive.fileName, { type: "application/zip" }));
+    expect(valid.deepCase.serverCapabilities?.queryStoreState).toBe("READ_WRITE");
+    const entries = unzipSync(archive.bytes);
+    const manifest = JSON.parse(strFromU8(entries["manifest.json"])) as { casePath: string; caseSha256: string };
+    const caseJson = JSON.parse(strFromU8(entries[manifest.casePath])) as { serverCapabilities: { permissions: { viewDatabasePerformanceState: unknown } } };
+    caseJson.serverCapabilities.permissions.viewDatabasePerformanceState = "yes";
+    const caseBytes = strToU8(JSON.stringify(caseJson));
+    entries[manifest.casePath] = caseBytes;
+    const caseCopy = new Uint8Array(caseBytes.byteLength); caseCopy.set(caseBytes);
+    const digest = await crypto.subtle.digest("SHA-256", caseCopy.buffer);
+    manifest.caseSha256 = [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, "0")).join("");
+    entries["manifest.json"] = strToU8(JSON.stringify(manifest));
+    const forged = zipSync(entries);
+    const forgedCopy = new Uint8Array(forged.byteLength); forgedCopy.set(forged);
+
+    await expect(openDeepCaseArchive(new File([forgedCopy.buffer], archive.fileName, { type: "application/zip" }))).rejects.toThrow("capability snapshot");
+  });
+
   it("migrates a schema 1.0 working case when it is reopened", async () => {
     const current = createCpuBlockingCase(report, blockingFinding, "2026-08-27T15:05:00Z", "case-old");
     const oldCase = { ...current, schemaVersion: "1.0" as const, incidentWindow: undefined, rootIdentity: undefined, observations: undefined, captureAttempts: undefined, narrative: undefined };
     const archive = await createDeepCaseArchive(oldCase, [], "2026-08-27T15:11:00Z");
     const copy = new Uint8Array(archive.bytes.byteLength); copy.set(archive.bytes);
     const reopened = await openDeepCaseArchive(new File([copy.buffer], archive.fileName, { type: "application/zip" }));
-    expect(reopened.deepCase.schemaVersion).toBe("1.1");
+    expect(reopened.deepCase.schemaVersion).toBe("1.5");
     expect(reopened.deepCase.rootIdentity?.sessionId).toBe(104);
     expect(reopened.deepCase.assertions.some((item) => item.id === "serialization")).toBe(true);
+  });
+
+  it("imports and ranks a manual Spill Triage case", async () => {
+    const deepCase = createSpillTriageCase("2026-09-02T15:00:00Z", "spill-case");
+    const evidence = new File([
+      "Total Spills,Avg Spills,# Executions,Last Execution,Plan Handle,Query Hash,Query Plan Hash,Warnings\n158870,15887,10,2026-09-02 09:00:00,0xAAA,0x111,0xA1,Spill\n100000,50000,2,2026-09-02 09:10:00,0xBBB,0x111,0xB1,Spill\n",
+    ], "blitz-spills.csv", { type: "text/csv" });
+    const result = await addEvidenceFiles(deepCase, [evidence], "2026-09-02T15:01:00Z");
+    expect(result.deepCase.spillTriage?.candidates).toHaveLength(2);
+    expect(result.deepCase.spillTriage?.candidates[0].identity.planHandle).toBe("0xAAA");
+    expect(result.deepCase.spillTriage?.selectedCandidateId).toBe(result.deepCase.spillTriage?.candidates[0].id);
+    expect(result.deepCase.spillTriage?.imports[0].warnings.join(" ")).toContain("bounded top-N");
+  });
+
+  it("deduplicates identical evidence within one import before creating artifacts or candidates", async () => {
+    const body = "Total Spills,Plan Handle\n100,0xDUPLICATE\n";
+    const first = new File([body], "first.csv", { type: "text/csv" });
+    const second = new File([body], "second.csv", { type: "text/csv" });
+    const result = await addEvidenceFiles(createSpillTriageCase("2026-09-02T15:00:00Z", "dedupe"), [first, second], "2026-09-02T15:01:00Z");
+    expect(result.acceptedFiles.map((file) => file.name)).toEqual(["first.csv"]);
+    expect(result.deepCase.artifacts).toHaveLength(1);
+    expect(result.deepCase.spillTriage?.candidates).toHaveLength(1);
+    expect(result.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ fileName: "second.csv", severity: "info", code: "duplicate" }),
+    ]));
+    const repeated = await addEvidenceFiles(result.deepCase, [second], "2026-09-02T15:02:00Z");
+    expect(repeated.acceptedFiles).toEqual([]);
+    expect(repeated.deepCase.artifacts).toHaveLength(1);
+    expect(repeated.messages[0]).toMatchObject({ fileName: "second.csv", severity: "info", code: "duplicate" });
+  });
+
+  it("reports when a parsed Showplan has no correlation-ready stable identity", async () => {
+    const plan = new File([
+      `<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan"><BatchSequence><Batch><Statements><StmtSimple StatementText="SELECT 1"><QueryPlan><RelOp NodeId="0" PhysicalOp="Constant Scan" LogicalOp="Constant Scan" /></QueryPlan></StmtSimple></Statements></Batch></BatchSequence></ShowPlanXML>`,
+    ], "identity-free.sqlplan", { type: "application/xml" });
+
+    const result = await addEvidenceFiles(createSpillTriageCase("2026-09-02T15:00:00Z", "identity-free"), [plan], "2026-09-02T15:01:00Z");
+
+    expect(result.deepCase.spillTriage?.plans).toHaveLength(1);
+    expect(result.messages[0]).toMatchObject({ fileName: "identity-free.sqlplan", severity: "warning", code: "plan-identity-missing" });
+    expect(result.messages[0].message).toMatch(/imported successfully.*cannot be connected automatically/i);
+  });
+
+  it("reports escaped Showplan XML without echoing file contents", async () => {
+    const plan = new File(["&lt;ShowPlanXML&gt;private text&lt;/ShowPlanXML&gt;"], "escaped.sqlplan", { type: "application/xml" });
+
+    const result = await addEvidenceFiles(createSpillTriageCase("2026-09-02T15:00:00Z", "escaped"), [plan], "2026-09-02T15:01:00Z");
+
+    expect(result.deepCase.spillTriage?.plans).toHaveLength(0);
+    expect(result.deepCase.artifacts).toHaveLength(1);
+    expect(result.messages[0]).toMatchObject({ fileName: "escaped.sqlplan", severity: "error", code: "plan-invalid" });
+    expect(result.messages[0].message).toMatch(/escaped Showplan XML/i);
+    expect(result.messages[0].message).not.toContain("private text");
+  });
+
+  it("isolates unsupported and empty evidence while importing valid files", async () => {
+    const valid = new File(["Total Spills,Plan Handle\n100,0xVALID\n"], "valid.csv", { type: "text/csv" });
+    const unsupported = new File(["private"], "notes.docx");
+    const empty = new File([], "empty.sqlplan", { type: "application/xml" });
+
+    const result = await addEvidenceFiles(createSpillTriageCase("2026-09-02T15:00:00Z", "isolated"), [valid, unsupported, empty], "2026-09-02T15:01:00Z");
+
+    expect(result.acceptedFiles.map((file) => file.name)).toEqual(["valid.csv"]);
+    expect(result.deepCase.spillTriage?.candidates).toHaveLength(1);
+    expect(result.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ fileName: "notes.docx", severity: "error", code: "unsupported-type" }),
+      expect.objectContaining({ fileName: "empty.sqlplan", severity: "error", code: "empty-file" }),
+    ]));
+  });
+
+  it("extracts an embedded Showplan from a detected header below workbook preamble rows", async () => {
+    const xml = `<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan"><BatchSequence><Batch><Statements><StmtSimple StatementText="SELECT 1" StatementType="SELECT" PlanHandle="0xPREAMBLE"><QueryPlan><RelOp NodeId="1" PhysicalOp="Index Scan" LogicalOp="Index Scan" EstimateRows="1" /></QueryPlan></StmtSimple></Statements></Batch></BatchSequence></ShowPlanXML>`;
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([
+      ["Generated locally"],
+      ["Review note", "preamble"],
+      ["Total Spills", "Plan Handle", "Query Plan"],
+      [100, "0xPREAMBLE", xml],
+    ]), "Spills");
+    const bytes = XLSX.write(workbook, { type: "array", bookType: "xlsx" }) as ArrayBuffer;
+    const result = await addEvidenceFiles(createSpillTriageCase("2026-09-02T15:00:00Z", "preamble"), [new File([bytes], "preamble.xlsx")], "2026-09-02T15:01:00Z");
+    expect(result.deepCase.spillTriage?.imports[0].headerRow).toBe(3);
+    expect(result.deepCase.spillTriage?.plans).toHaveLength(1);
+    expect(result.deepCase.spillTriage?.plans[0].plan.statements[0].queryIdentity?.planHandle).toBe("0xPREAMBLE");
   });
 
   it("rejects a case whose evidence bytes no longer match the manifest", async () => {

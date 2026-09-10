@@ -1,9 +1,15 @@
 import { File } from "node:buffer";
 import { describe, expect, it } from "vitest";
 import * as XLSX from "xlsx";
-import { parseCaptureFile } from "./ingest";
+import { parseCaptureFile, parseInputFile } from "./ingest";
 
 describe("capture workbook ingestion", () => {
+  it("reports empty, unsupported, and escaped plan uploads specifically", async () => {
+    await expect(parseInputFile(new File([], "empty.sqlplan"))).rejects.toThrow(/empty/i);
+    await expect(parseInputFile(new File(["private"], "notes.docx"))).rejects.toThrow(/unsupported file type/i);
+    await expect(parseInputFile(new File(["&lt;ShowPlanXML&gt;private&lt;/ShowPlanXML&gt;"], "escaped.sqlplan"))).rejects.toThrow(/escaped Showplan XML/i);
+  });
+
   it("imports duplicate WhoIsActive column blocks and reports the ambiguity", async () => {
     const headers = [
       "session_id", "wait_info", "tran_log_writes", "CPU", "tempdb_allocations", "tempdb_current",

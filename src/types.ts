@@ -37,6 +37,7 @@ export interface WhoIsActiveRecord {
   wait: WaitInfo | null;
   waitParseWarning?: string | null;
   status: string | null;
+  percentComplete?: number | null;
   blockingSessionId: number | null;
   blockedSessionCount: number | null;
   openTranCount: number | null;
@@ -74,6 +75,25 @@ export interface SupplementalEvidenceSource {
   rowCount: number;
 }
 
+export interface PlanObjectIdentity {
+  server?: string | null;
+  database?: string | null;
+  schema?: string | null;
+  table?: string | null;
+  index?: string | null;
+  kind?: string | null;
+}
+
+export interface PlanStatisticsUsage {
+  database: string | null;
+  schema: string | null;
+  table: string | null;
+  statistics: string | null;
+  modificationCount: number | null;
+  samplingPercent: number | null;
+  lastUpdate: string | null;
+}
+
 export interface PlanOperator {
   id: string;
   nodeId: number | null;
@@ -84,12 +104,26 @@ export interface PlanOperator {
   estimatedCost: number | null;
   warnings: string[];
   objectName?: string;
+  objectIdentity?: PlanObjectIdentity;
   predicate?: string | null;
   seekPredicate?: string | null;
   residualPredicate?: string | null;
   nonSargablePredicate?: string | null;
   isParallel?: boolean;
   hasScalarFunction?: boolean;
+  childNodeIds?: number[];
+  spillDetails?: {
+    kind: "Sort" | "Hash" | "Generic";
+    spillLevel: number | null;
+    spilledThreadCount: number | null;
+    tempdbFileCount?: number | null;
+    pagesWritten: number | null;
+    pagesRead: number | null;
+    grantedMemoryKb: number | null;
+    usedMemoryKb: number | null;
+    requestedMemoryKb: number | null;
+    rawAttributes: Record<string, string>;
+  }[];
 }
 
 export type PlanSourceKind = "Embedded" | "Cached estimated" | "Estimated" | "Actual" | "Last-known actual" | "Query Store" | "Extended Events";
@@ -116,6 +150,7 @@ export interface PlanStatement {
   memoryGrant?: { requestedKb: number; grantedKb: number; usedKb: number };
   operators: PlanOperator[];
   warnings: string[];
+  statisticsUsage?: PlanStatisticsUsage[];
   queryIdentity?: PlanQueryIdentity;
   nonParallelPlanReason?: string | null;
   earlyAbortReason?: string | null;
@@ -253,6 +288,44 @@ export interface FindingCapDisclosure {
   order: "Descending diagnostic impact";
 }
 
+export type InvestigationActionType = "Review" | "Capture" | "Upload" | "Corroborate" | "Deep Analysis";
+
+export interface InvestigationSubjectSummary {
+  id: string;
+  sessionId: number | null;
+  requestId: number | null;
+  lastObservedAt: string | null;
+  lastStatus: string | null;
+  durationSeconds: number | null;
+  resourceSummary: EvidenceItem[];
+  blockingObserved: boolean;
+  completion: string;
+  primaryEvidenceGap: string;
+}
+
+export interface InvestigationStep {
+  id: string;
+  order: number;
+  title: string;
+  reason: string;
+  actionType: InvestigationActionType;
+  condition?: string;
+  expectedEvidence: string[];
+  caution?: string;
+  command?: string;
+  sourceFindingIds: string[];
+  targetFindingId?: string;
+  deepAnalysisProfile?: string;
+}
+
+export interface InvestigationGuide {
+  schemaVersion: "1.0";
+  conclusion: string;
+  missingEvidence: string[];
+  subjects: InvestigationSubjectSummary[];
+  steps: InvestigationStep[];
+}
+
 export interface DataQuality {
   presentColumns: string[];
   missingColumns: string[];
@@ -343,6 +416,7 @@ export interface AnalysisReport {
   dataQuality: DataQuality;
   redacted: boolean;
   thresholdProfile?: ThresholdProfileSnapshot;
+  investigationGuide?: InvestigationGuide;
 }
 
 export interface RuleContext {

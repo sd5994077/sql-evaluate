@@ -1,11 +1,18 @@
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
-import type { AnalysisReport, Finding } from "../types";
+import type { AnalysisReport, Finding, PlanDocument, PlanQueryIdentity, PlanSourceKind } from "../types";
+import { captureRange } from "../lib/importPreview";
+import type { ImportPreviewItem } from "../lib/importPreview";
+import { validateCaseDetails } from "./metadata";
 import { APP_VERSION } from "../version";
 import { decodeText, parseCsv } from "../lib/csv";
-import { inspectEvidenceMatrix, normalizeEvidenceHeader } from "./adapters";
+import { identityFromRow, inspectEvidenceMatrix, normalizeEvidenceHeader } from "./adapters";
+import { parseCapabilitySnapshot } from "./capabilities";
+import { hasCorrelationReadyIdentity } from "./correlation";
 import { evaluateDeepCase } from "./evaluator";
 import { cpuBlockingCollectionCommand, CPU_BACKED_BLOCKING_PROFILE, deepAnalysisProfileForFinding, extendedEventsShowplanCommand, lastKnownActualPlanCommand, profileLabel, queryStoreExportCommand } from "./profile";
-import type { DeepAnalysisCase, DeepCaseArchive, DeepCaseArchiveManifest, DeepCaseArtifact, DeepEvidenceAssertion, DeepEvidenceObservation, DeepProfileId, DeepQueryIdentity } from "./types";
+import { inspectSpillTriageMatrix, rankSpillCandidates, resolveCandidatePlan } from "./spillTriage";
+import { spillCollectionSteps } from "./toolCatalog";
+import type { DeepAnalysisCase, DeepCaseArchive, DeepCaseArchiveManifest, DeepCaseArtifact, DeepEvidenceAssertion, DeepEvidenceObservation, DeepProfileId, DeepQueryIdentity, EvidenceImportMessage, ServerCapabilitySnapshot, SpillCandidate, SpillImportSummary, SpillManualPlanSelection, SpillPlanEvidence, SpillTriageState } from "./types";
 
 const CASE_SIZE_LIMIT = 100 * 1024 * 1024;
 const UNCOMPRESSED_LIMIT = 200 * 1024 * 1024;
@@ -69,7 +76,8 @@ export function createCpuBlockingCase(report: AnalysisReport, finding: Finding, 
   const hasOpenTransaction = (context.openTransactionCount ?? 0) > 0;
   const relatedTimes = report.records.filter((record) => finding.affectedRecordIds.includes(record.id)).map((record) => record.collectionTime).filter((value): value is string => Boolean(value)).sort();
   const base: DeepAnalysisCase = {
-    schemaVersion: "1.1",
+    schemaVersion: "1.5",
+    status: "Investigating", ticketReference: "", notes: "",
     id,
     profileId: CPU_BACKED_BLOCKING_PROFILE.id,
     title: `CPU-backed blocking / SPID ${context.headBlockerSessionId}`,
@@ -88,6 +96,10 @@ export function createCpuBlockingCase(report: AnalysisReport, finding: Finding, 
       evidence: finding.evidence,
       blockingContext: context,
     },
+    origin: { kind: "finding", finding: {
+      id: finding.id, ruleId: finding.ruleId, severity: finding.severity, confidence: finding.confidence,
+      category: finding.category, title: finding.title, summary: finding.summary, evidence: finding.evidence, blockingContext: context,
+    } },
     rootSessionId: context.headBlockerSessionId,
     rootIdentity: rootIdentity(report, finding),
     incidentWindow: {
@@ -250,7 +262,38 @@ SELECT 'PLAN_CACHE_INVENTORY' AS evidence_set, SYSDATETIMEOFFSET() AS captured_a
 FROM sys.dm_exec_cached_plans;`;
   if (profileId === "memory-grants") return `/* SQL Evaluate: execution memory grants. Read-only. */\nSELECT session_id, request_id, request_time, grant_time, requested_memory_kb, granted_memory_kb, used_memory_kb, max_used_memory_kb, wait_time_ms FROM sys.dm_exec_query_memory_grants;\nSELECT session_id, request_id, wait_type, wait_time, granted_query_memory FROM sys.dm_exec_requests WHERE wait_type = 'RESOURCE_SEMAPHORE' OR session_id = ${target};`;
   if (profileId === "plan-specific") return `/* SQL Evaluate: plan-specific follow-up. Read-only cache lookup; a NULL plan is a valid result. */\nDECLARE @TargetSessionId smallint = ${target};\nSELECT r.session_id, r.request_id, r.sql_handle, r.plan_handle, qp.query_plan FROM sys.dm_exec_requests AS r OUTER APPLY sys.dm_exec_query_plan(r.plan_handle) AS qp WHERE @TargetSessionId = 0 OR r.session_id = @TargetSessionId;`;
+  if (profileId === "spill-triage") return `/* SQL Evaluate Spill Triage input. SQL Evaluate never executes this script. */\nEXEC dbo.sp_BlitzCache @SortOrder = 'Spills', @Top = 10, @ExpertMode = 1;`;
   return lastKnownActualPlanCommand(target);
+}
+
+export function createSpillTriageCase(createdAt = new Date().toISOString(), id = caseId()): DeepAnalysisCase {
+  const base: DeepAnalysisCase = {
+    schemaVersion: "1.5",
+    status: "Investigating", ticketReference: "", notes: "",
+    id,
+    profileId: "spill-triage",
+    title: "Spill Triage",
+    createdAt,
+    updatedAt: createdAt,
+    sourceReportCreatedAt: createdAt,
+    sourceFileNames: [],
+    origin: { kind: "manual", label: "Imported sp_BlitzCache spill results" },
+    rootSessionId: null,
+    rootIdentity: {},
+    incidentWindow: { firstObservedAt: null, lastObservedAt: null, overlapQuality: "Unknown", explanation: "The import does not establish an incident window." },
+    observations: [],
+    captureAttempts: [],
+    assertions: [
+      assertion("spill-candidates", "Spill candidates", "Numeric BlitzCache spill evidence is available for transparent candidate ranking.", "Not Evaluated", [], ["A supported sp_BlitzCache CSV or workbook export"]),
+      assertion("plan-captured", "Matching execution plan", "A plan is connected to the selected candidate through stable SQL Server identity.", "Not Evaluated", [], ["A cached or actual Showplan with stable identity"]),
+    ],
+    collectionSteps: [],
+    artifacts: [],
+    events: [{ occurredAt: createdAt, type: "Case created", summary: "Started a manual offline Spill Triage case." }],
+    spillTriage: { candidates: [], selectedCandidateId: null, imports: [], plans: [], manualPlanSelections: [] },
+    sensitive: true,
+  };
+  return { ...base, collectionSteps: spillCollectionSteps(undefined, undefined, id) };
 }
 
 function controlledActualPlanInstructions(): string {
@@ -275,7 +318,10 @@ export function createDeepAnalysisCase(report: AnalysisReport, finding: Finding,
   const rootSessionId = identity.sessionId ?? null;
   const relatedTimes = report.records.filter((record) => finding.affectedRecordIds.includes(record.id)).map((record) => record.collectionTime).filter((value): value is string => Boolean(value)).sort();
   const direct = (label: string, statement: string) => assertion(label.toLowerCase().replace(/[^a-z0-9]+/g, "-"), label, statement, "Observed", [`The source finding directly reports: ${finding.title}.`], []);
-  const assertions: DeepEvidenceAssertion[] = profileId === "transaction-blocking" ? [
+  const assertions: DeepEvidenceAssertion[] = profileId === "spill-triage" ? [
+    direct("Spill candidates", "The source finding reports a runtime spill; imported BlitzCache rows can prioritize the cached variants for investigation."),
+    assertion("plan-captured", "Matching execution plan", "A plan is connected to the selected candidate through stable SQL Server identity.", "Not Evaluated", [], ["A cached or actual Showplan with stable identity"]),
+  ] : profileId === "transaction-blocking" ? [
     assertion("blocking-chain", "Blocking chain", `SPID ${finding.blockingContext!.headBlockerSessionId} is the captured blocking root.`, "Observed", ["The supplied capture contains the resolved blocking graph."], []),
     assertion("open-transactions", "Open transaction", "The sleeping root retained an open transaction while blocking downstream work.", (finding.blockingContext!.openTransactionCount ?? 0) > 0 ? "Observed" : "Not Evaluated", [`Captured open transaction count: ${finding.blockingContext!.openTransactionCount ?? "unknown"}.`], ["Transaction ownership and start time"]),
     assertion("root-lock-owner", "Lock ownership", "The root transaction owns the lock resources responsible for the victim waits.", "Not Evaluated", [], ["Root granted locks and matching victim wait resources"]),
@@ -330,15 +376,17 @@ export function createDeepAnalysisCase(report: AnalysisReport, finding: Finding,
     requiresApproval: true,
   }] : [{ id: `${profileId}-capture`, title: `Collect ${profileLabel(profileId).toLowerCase()} evidence`, purpose: "Import the bounded evidence needed to support or contradict the working theory.", command: genericCollectionCommand(profileId, rootSessionId), requiredPermissions: ["VIEW SERVER STATE or VIEW SERVER PERFORMANCE STATE as applicable"], expectedEvidence: assertions.flatMap((item) => item.missingEvidence).slice(0, 8), supportedVersions: "SQL Server 2016 and later; permissions vary by version.", overhead: "Low", caution: "Run briefly under approved production-access procedures. SQL Evaluate never executes this script.", status: "Pending", artifactIds: [], executionMode: "Read-only" }];
   const base: DeepAnalysisCase = {
-    schemaVersion: "1.1", id, profileId, title: `${profileLabel(profileId)}${rootSessionId ? ` / SPID ${rootSessionId}` : ""}`, createdAt, updatedAt: createdAt,
+    schemaVersion: "1.5", status: "Investigating", ticketReference: "", notes: "", id, profileId, title: `${profileLabel(profileId)}${rootSessionId ? ` / SPID ${rootSessionId}` : ""}`, createdAt, updatedAt: createdAt,
     sourceReportCreatedAt: report.createdAt, sourceFileNames: report.inputs.map((input) => input.fileName),
     sourceFinding: { id: finding.id, ruleId: finding.ruleId, severity: finding.severity, confidence: finding.confidence, category: finding.category, title: finding.title, summary: finding.summary, evidence: finding.evidence, blockingContext: finding.blockingContext },
+    origin: { kind: "finding", finding: { id: finding.id, ruleId: finding.ruleId, severity: finding.severity, confidence: finding.confidence, category: finding.category, title: finding.title, summary: finding.summary, evidence: finding.evidence, blockingContext: finding.blockingContext } },
     rootSessionId, rootIdentity: identity,
     incidentWindow: { firstObservedAt: relatedTimes[0] ?? finding.firstSeen ?? null, lastObservedAt: relatedTimes.at(-1) ?? finding.lastSeen ?? null, overlapQuality: relatedTimes.length ? "Exact" : "Unknown", explanation: relatedTimes.length ? "The incident window comes from affected capture timestamps." : "No usable capture boundary was supplied." },
     observations: [], captureAttempts: [], assertions,
     collectionSteps,
-    artifacts: [], events: [{ occurredAt: createdAt, type: "Case created", summary: `Started ${profileLabel(profileId)} from ${finding.title}.` }], sensitive: true,
+    artifacts: [], events: [{ occurredAt: createdAt, type: "Case created", summary: `Started ${profileLabel(profileId)} from ${finding.title}.` }], spillTriage: profileId === "spill-triage" ? { candidates: [], selectedCandidateId: null, imports: [], plans: [], manualPlanSelections: [] } : undefined, sensitive: true,
   };
+  if (profileId === "spill-triage") base.collectionSteps = spillCollectionSteps(base.spillTriage?.candidates[0], undefined, id);
   return evaluateDeepCase(base);
 }
 
@@ -352,8 +400,83 @@ async function sha256File(file: File): Promise<string> {
 }
 
 interface InspectedEvidence {
+  worksheets: string[];
+  rowCount: number;
+  recognizedHeaders: string[];
   artifact: DeepCaseArtifact;
   observations: DeepEvidenceObservation[];
+  spillCandidates: SpillCandidate[];
+  spillImports: SpillImportSummary[];
+  spillPlans: SpillPlanEvidence[];
+  capabilitySnapshots: ServerCapabilitySnapshot[];
+  messages: EvidenceImportMessage[];
+}
+
+interface EmbeddedPlanCell {
+  xml: string;
+  identity: DeepQueryIdentity;
+  sourceKind?: PlanSourceKind;
+}
+
+function normalizedIdentityValue(value: unknown): string | number | null {
+  if (value === null || value === undefined || value === "") return null;
+  return typeof value === "number" ? value : String(value).trim().toLowerCase();
+}
+
+function enrichPlanWithSidecar(plan: PlanDocument, sidecar: DeepQueryIdentity): { plan: PlanDocument; warning?: string } {
+  const statements = plan.statements;
+  const exactOffsets = sidecar.statementStartOffset != null && sidecar.statementEndOffset != null
+    ? statements.filter((statement) => statement.queryIdentity?.statementStartOffset === sidecar.statementStartOffset && statement.queryIdentity?.statementEndOffset === sidecar.statementEndOffset)
+    : [];
+  const pairedHashes = sidecar.queryHash && sidecar.queryPlanHash
+    ? statements.filter((statement) => normalizedIdentityValue(statement.queryIdentity?.queryHash) === normalizedIdentityValue(sidecar.queryHash) && normalizedIdentityValue(statement.queryIdentity?.queryPlanHash) === normalizedIdentityValue(sidecar.queryPlanHash))
+    : [];
+  const queryStore = sidecar.queryStoreQueryId != null && sidecar.queryStorePlanId != null
+    ? statements.filter((statement) => statement.queryIdentity?.queryStoreQueryId === sidecar.queryStoreQueryId && statement.queryIdentity?.queryStorePlanId === sidecar.queryStorePlanId)
+    : [];
+  const targets = exactOffsets.length === 1 ? exactOffsets : pairedHashes.length === 1 ? pairedHashes : queryStore.length === 1 ? queryStore : statements.length === 1 ? statements : [];
+  if (targets.length !== 1) return { plan, warning: "Stable sidecar identity was preserved, but it could not be assigned to exactly one statement in the embedded Showplan." };
+  const target = targets[0];
+  const current = target.queryIdentity ?? {};
+  const fields: Array<keyof PlanQueryIdentity> = ["sqlHandle", "planHandle", "queryHash", "queryPlanHash", "statementStartOffset", "statementEndOffset", "queryStoreQueryId", "queryStorePlanId", "databaseId"];
+  const conflicts = fields.filter((field) => normalizedIdentityValue(current[field]) !== null && normalizedIdentityValue(sidecar[field]) !== null && normalizedIdentityValue(current[field]) !== normalizedIdentityValue(sidecar[field]));
+  // SQL Server can emit a statement SqlHandle in a cached Showplan that differs
+  // from the sql_handle on the exact dm_exec_query_stats row. An exact sidecar
+  // plan_handle is more specific provenance in that case. A contradictory plan
+  // handle (or any other conflict) still prevents automatic merging.
+  const sidecarPlanMatches = sidecar.planHandle
+    && (!current.planHandle || normalizedIdentityValue(current.planHandle) === normalizedIdentityValue(sidecar.planHandle));
+  // Query Store compile plans can expose StatementSqlHandle, which is not the
+  // plan-cache batch sql_handle carried by dm_exec_query_stats. A fully scoped
+  // Query Store sidecar is authoritative for correlation and must not retain
+  // that embedded value as a comparable batch handle.
+  const scopedQueryStoreSidecar = plan.sourceKind === "Query Store"
+    && sidecar.queryStoreQueryId != null
+    && sidecar.queryStorePlanId != null
+    && sidecar.databaseId != null;
+  const sidecarOwnsSqlHandle = Boolean(sidecarPlanMatches || scopedQueryStoreSidecar);
+  const blockingConflicts = conflicts.filter((field) => field !== "sqlHandle" || !sidecarOwnsSqlHandle);
+  if (blockingConflicts.length) return { plan, warning: `Showplan identity conflicts with its result-row provenance for ${blockingConflicts.join(", ")}; SQL Evaluate did not merge the sidecar identity.` };
+  const planSidecar = Object.fromEntries(fields.map((field) => [field, sidecar[field]]).filter(([, value]) => value !== null && value !== undefined && value !== ""));
+  const embeddedIdentity = Object.fromEntries(Object.entries(current)
+    .filter(([field, value]) => value !== null && value !== undefined && value !== "" && !(field === "sqlHandle" && sidecarOwnsSqlHandle))) as PlanQueryIdentity;
+  const merged = { ...planSidecar, ...embeddedIdentity } as PlanQueryIdentity;
+  return { plan: { ...plan, statements: statements.map((statement) => statement.id === target.id ? { ...statement, queryIdentity: merged } : statement) } };
+}
+
+function supportedEvidenceFile(fileName: string, profileId: DeepProfileId): boolean {
+  const lower = fileName.toLowerCase();
+  const extensions = profileId === "spill-triage"
+    ? [".csv", ".tsv", ".xlsx", ".xls", ".sqlplan", ".xml"]
+    : [".csv", ".tsv", ".xlsx", ".xls", ".sqlplan", ".xml", ".json", ".txt"];
+  return extensions.some((extension) => lower.endsWith(extension));
+}
+
+function readFailureMessage(file: File): string {
+  const lower = file.name.toLowerCase();
+  if (lower.endsWith(".xlsx") || lower.endsWith(".xls")) return "The workbook could not be read. Confirm it is not password-protected or corrupted, then save a fresh copy and retry.";
+  if (lower.endsWith(".sqlplan") || lower.endsWith(".xml")) return "The execution plan could not be read. Confirm it is raw SQL Server Showplan XML and retry.";
+  return "The evidence file could not be read. Confirm the file is accessible and not corrupted, then retry.";
 }
 
 async function inspectEvidenceFile(file: File, rootSessionId: number | null, importedAt: string): Promise<InspectedEvidence> {
@@ -372,9 +495,35 @@ async function inspectEvidenceFile(file: File, rootSessionId: number | null, imp
   let adapterVersion = "1.0";
   let capturedAt: string | null = null;
   let identity: DeepQueryIdentity | undefined;
-  const embeddedPlans: string[] = [];
+  const embeddedPlans: EmbeddedPlanCell[] = [];
+  const spillCandidates: SpillCandidate[] = [];
+  const spillImports: SpillImportSummary[] = [];
+  const spillPlans: SpillPlanEvidence[] = [];
+  const capabilitySnapshots: ServerCapabilitySnapshot[] = [];
+  const messages: EvidenceImportMessage[] = [];
 
+  const worksheets: string[] = [];
+  let rowCount = 0;
+  const recognizedHeaders = new Set<string>();
   const mergeMatrix = (matrix: unknown[][], prefix?: string) => {
+    rowCount += Math.max(0, matrix.length - 1);
+    if (prefix) worksheets.push(prefix);
+    const capability = parseCapabilitySnapshot(matrix, artifactId);
+    if (capability.recognized) {
+      adapterId = "sql-evaluate-capabilities";
+      resultSetTypes.add("SERVER_CAPABILITIES");
+      if (capability.snapshot) {
+        capabilitySnapshots.push(capability.snapshot);
+        signals.add("server-capabilities");
+        details.push(`Server capabilities: SQL Server ${capability.snapshot.productVersion}${capability.snapshot.edition ? ` ${capability.snapshot.edition}` : ""}; ${capability.snapshot.tools.filter((tool) => tool.installed).length} installed diagnostic object${capability.snapshot.tools.filter((tool) => tool.installed).length === 1 ? "" : "s"} detected.`);
+        warnings.push(...capability.snapshot.warnings);
+        if (capability.stale) messages.push({ fileName: file.name, severity: "warning", code: "capability-stale", message: capability.snapshot.warnings.find((warning) => warning.includes("days old")) ?? "The capability snapshot may be stale." });
+      } else {
+        const message = capability.error ?? "The capability snapshot is malformed.";
+        warnings.push(message);
+        messages.push({ fileName: file.name, severity: "error", code: "capability-invalid", message });
+      }
+    }
     const result = inspectEvidenceMatrix(matrix, rootSessionId, artifactId);
     result.signals.forEach((signal) => signals.add(signal));
     result.resultSetTypes.forEach((type) => resultSetTypes.add(type));
@@ -387,11 +536,26 @@ async function inspectEvidenceFile(file: File, rootSessionId: number | null, imp
     capturedAt ??= result.capturedAt;
     identity ??= result.identity;
     details.push(...result.details.map((detail) => prefix ? `${prefix}: ${detail}` : detail));
-    const headers = (matrix[0] ?? []).map(normalizeEvidenceHeader);
-    const planIndex = ["query_plan", "showplan_xml", "last_query_plan"].map((name) => headers.indexOf(name)).find((index) => index >= 0) ?? -1;
-    if (planIndex >= 0) matrix.slice(1).forEach((row) => {
+    const spill = inspectSpillTriageMatrix(matrix, { artifactId, fileName: file.name, sheetName: prefix ?? null, sourceOffset: spillCandidates.length });
+    spillCandidates.push(...spill.candidates);
+    if (spill.summary) { spillImports.push(spill.summary); spill.summary.recognizedHeaders.forEach((header) => recognizedHeaders.add(header)); }
+    const headerRows = matrix
+      .map((row, index) => ({ row, index, headers: row.map(normalizeEvidenceHeader) }))
+      .filter(({ row }) => row.some((value) => String(value ?? "").trim()))
+      .slice(0, 50);
+    const spillHeader = spill.summary ? headerRows.find(({ index }) => index === (spill.summary?.headerRow ?? 0) - 1) : undefined;
+    const planHeader = spillHeader && ["query_plan", "showplan_xml", "last_query_plan"].some((name) => spillHeader.headers.includes(name))
+      ? spillHeader
+      : spill.summary ? undefined : headerRows.find(({ headers }) => ["query_plan", "showplan_xml", "last_query_plan"].some((name) => headers.includes(name)));
+    const planIndex = planHeader ? ["query_plan", "showplan_xml", "last_query_plan"].map((name) => planHeader.headers.indexOf(name)).find((index) => index >= 0) ?? -1 : -1;
+    if (planHeader && planIndex >= 0) matrix.slice(planHeader.index + 1).forEach((row) => {
       const xml = String(row[planIndex] ?? "").trim();
-      if (/<\s*(?:\w+:)?ShowPlanXML\b/i.test(xml)) embeddedPlans.push(xml);
+      if (/<\s*(?:\w+:)?ShowPlanXML\b/i.test(xml)) {
+        const evidenceSetIndex = planHeader.headers.indexOf("evidence_set");
+        const evidenceSet = evidenceSetIndex >= 0 ? String(row[evidenceSetIndex] ?? "").trim().toUpperCase() : "";
+        const sourceKind: PlanSourceKind | undefined = evidenceSet === "LAST_KNOWN_ACTUAL_PLAN" ? "Last-known actual" : evidenceSet === "QUERY_STORE" ? "Query Store" : evidenceSet === "EXTENDED_EVENTS" ? "Extended Events" : evidenceSet === "CACHED_PLAN_PROVENANCE" || evidenceSet === "REQUEST_PLAN" ? "Cached estimated" : undefined;
+        embeddedPlans.push({ xml, identity: identityFromRow(planHeader.headers, row), sourceKind });
+      }
     });
   };
 
@@ -400,6 +564,7 @@ async function inspectEvidenceFile(file: File, rootSessionId: number | null, imp
       const xml = decodeText(bytes);
       const { parseShowplan } = await import("../lib/showplan");
       const plan = parseShowplan(xml, `deep-${hash.slice(0, 12)}`, file.name);
+      spillPlans.push({ artifactId, fileName: file.name, plan });
       signals.add("plan-captured");
       adapterId = "showplan";
       kind = "Execution plan";
@@ -416,17 +581,28 @@ async function inspectEvidenceFile(file: File, rootSessionId: number | null, imp
       if (wastedGrants.length) { signals.add("unused-memory-grant"); signals.add("plan-memory-overgrant"); details.push("The plan contains a workspace-memory grant at least four times maximum used memory."); }
       if (plan.statements.some((statement) => statement.operators.some((operator) => operator.hasScalarFunction))) signals.add("filter-udf");
       if (plan.statements.some((statement) => statement.operators.some((operator) => Boolean(operator.residualPredicate || operator.nonSargablePredicate)))) signals.add("non-sargable");
+      if (!plan.statements.some((statement) => hasCorrelationReadyIdentity(statement.queryIdentity))) {
+        const message = "Showplan imported successfully, but it contains no correlation-ready stable identity (plan_handle; sql_handle; query_hash plus query_plan_hash; or Query Store IDs plus database ID). It can be reviewed as plan evidence but cannot be connected automatically to a spill candidate.";
+        warnings.push(message);
+        messages.push({ fileName: file.name, severity: "warning", code: "plan-identity-missing", message });
+      }
     } catch (error) {
-      details.push(`XML was attached but not recognized as Showplan: ${error instanceof Error ? error.message : "parse error"}`);
-      warnings.push("The XML attachment was preserved but cannot drive plan assertions.");
+      const reason = error instanceof Error ? error.message : "The file could not be parsed as SQL Server Showplan XML.";
+      details.push(`XML was attached but not recognized as Showplan: ${reason}`);
+      warnings.push("The XML attachment was preserved for provenance but cannot drive plan assertions.");
+      messages.push({ fileName: file.name, severity: "error", code: "plan-invalid", message: `${reason} The file was preserved for provenance but was not added as usable plan evidence.` });
     }
   } else if (lower.endsWith(".xlsx") || lower.endsWith(".xls")) {
     const XLSX = await import("xlsx");
     const workbook = XLSX.read(bytes, { type: "array", dense: true, cellDates: true });
+    const ignoredSheets: Array<{ sheetName: string; reason: string }> = [];
     for (const sheetName of workbook.SheetNames) {
       const matrix = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, raw: true, defval: null }) as unknown[][];
+      const importsBefore = spillImports.length;
       mergeMatrix(matrix, sheetName);
+      if (spillImports.length === importsBefore) ignoredSheets.push({ sheetName, reason: "No supported spill header was detected." });
     }
+    for (const summary of spillImports) summary.ignoredSheets = ignoredSheets;
   } else {
     const text = decodeText(bytes);
     let matrix: unknown[][];
@@ -445,9 +621,16 @@ async function inspectEvidenceFile(file: File, rootSessionId: number | null, imp
 
   if (embeddedPlans.length) {
     const { parseShowplan } = await import("../lib/showplan");
-    for (const [index, xml] of embeddedPlans.slice(0, 25).entries()) {
+    for (const [index, embedded] of embeddedPlans.slice(0, 25).entries()) {
       try {
-        const plan = parseShowplan(xml, `${adapterId}-${hash.slice(0, 12)}-${index}`, `${adapterId}-${file.name}`);
+        const parsed = parseShowplan(embedded.xml, `${adapterId}-${hash.slice(0, 12)}-${index}`, `${adapterId}-${file.name}`);
+        const enriched = enrichPlanWithSidecar({ ...parsed, sourceKind: embedded.sourceKind ?? parsed.sourceKind }, embedded.identity);
+        const plan = enriched.plan;
+        spillPlans.push({ artifactId, fileName: file.name, plan });
+        if (enriched.warning) {
+          warnings.push(enriched.warning);
+          messages.push({ fileName: file.name, severity: "warning", code: enriched.warning.includes("conflicts") ? "plan-identity-conflict" : "plan-identity-missing", message: enriched.warning });
+        }
         const statementIdentity = plan.statements.find((statement) => statement.queryIdentity && Object.values(statement.queryIdentity).some((value) => value != null))?.queryIdentity;
         identity ??= statementIdentity;
         if (plan.isActual) signals.add("actual-plan");
@@ -463,7 +646,7 @@ async function inspectEvidenceFile(file: File, rootSessionId: number | null, imp
     if (embeddedPlans.length > 25) warnings.push(`${embeddedPlans.length - 25} additional embedded plans were preserved but not expanded in this case import.`);
   }
 
-  return { artifact: {
+  return { worksheets, rowCount, recognizedHeaders: [...recognizedHeaders], artifact: {
     id: artifactId,
     fileName: file.name,
     size: file.size,
@@ -478,27 +661,148 @@ async function inspectEvidenceFile(file: File, rootSessionId: number | null, imp
     resultSetTypes: [...resultSetTypes].sort(),
     identity,
     warnings,
-  }, observations };
+  }, observations, spillCandidates, spillImports, spillPlans, capabilitySnapshots, messages };
 }
 
-export async function addEvidenceFiles(deepCase: DeepAnalysisCase, files: File[], importedAt = new Date().toISOString()): Promise<{ deepCase: DeepAnalysisCase; acceptedFiles: File[] }> {
-  const inspected = await Promise.all(files.map((file) => inspectEvidenceFile(file, deepCase.rootSessionId, importedAt)));
+function validManualPlanSelections(spillTriage: SpillTriageState): SpillManualPlanSelection[] {
+  return spillTriage.manualPlanSelections.filter((selection) => {
+    const candidate = spillTriage.candidates.find((item) => item.id === selection.candidateId);
+    if (!candidate) return false;
+    const resolution = resolveCandidatePlan(candidate, spillTriage.plans);
+    return resolution.ambiguous && resolution.alternatives.some((alternative) => alternative.artifactId === selection.artifactId && alternative.statementId === selection.statementId);
+  });
+}
+
+export interface PreparedEvidenceBatch {
+  caseId: string;
+  sourceCase: DeepAnalysisCase;
+  importedAt: string;
+  accepted: InspectedEvidence[];
+  acceptedFiles: File[];
+  messages: EvidenceImportMessage[];
+  previews: ImportPreviewItem[];
+}
+
+export async function prepareEvidenceFiles(deepCase: DeepAnalysisCase, files: File[], importedAt = new Date().toISOString()): Promise<PreparedEvidenceBatch> {
   const existing = new Set(deepCase.artifacts.map((artifact) => artifact.sha256));
-  const accepted = inspected.filter((item) => !existing.has(item.artifact.sha256));
+  const uniqueFiles: File[] = [];
+  const messages: EvidenceImportMessage[] = [];
+  for (const file of files) {
+    if (!supportedEvidenceFile(file.name, deepCase.profileId)) {
+      messages.push({ fileName: file.name, severity: "error", code: "unsupported-type", message: deepCase.profileId === "spill-triage" ? "This file type is not supported here. Use CSV, TSV, XLSX, XLS, SQLPLAN, or XML evidence." : "This file type is not supported here. Use CSV, TSV, XLSX, XLS, SQLPLAN, XML, JSON, or TXT evidence." });
+      continue;
+    }
+    if (file.size === 0) {
+      messages.push({ fileName: file.name, severity: "error", code: "empty-file", message: "The file is empty and was not imported." });
+      continue;
+    }
+    if (file.size > CASE_SIZE_LIMIT) {
+      messages.push({ fileName: file.name, severity: "error", code: "read-failed", message: "The file exceeds the 100 MB evidence limit and was not imported." });
+      continue;
+    }
+    try {
+      const hash = await sha256File(file);
+      if (existing.has(hash)) {
+        messages.push({ fileName: file.name, severity: "info", code: "duplicate", message: "Identical evidence is already in this case, so this copy was skipped. Renaming does not change duplicate detection." });
+        continue;
+      }
+      existing.add(hash);
+      uniqueFiles.push(file);
+    } catch {
+      messages.push({ fileName: file.name, severity: "error", code: "read-failed", message: readFailureMessage(file) });
+    }
+  }
+  const inspected = await Promise.allSettled(uniqueFiles.map((file) => inspectEvidenceFile(file, deepCase.rootSessionId, importedAt)));
+  const accepted: InspectedEvidence[] = [];
+  const acceptedFiles: File[] = [];
+  inspected.forEach((result, index) => {
+    if (result.status === "fulfilled") {
+      accepted.push(result.value);
+      acceptedFiles.push(uniqueFiles[index]);
+      messages.push(...result.value.messages);
+    } else {
+      messages.push({ fileName: uniqueFiles[index].name, severity: "error", code: "read-failed", message: readFailureMessage(uniqueFiles[index]) });
+    }
+  });
+  const previews: ImportPreviewItem[] = files.map((file, index) => {
+    const acceptedIndex = acceptedFiles.indexOf(file);
+    const item = accepted[acceptedIndex];
+    return { id: String(index), fileName: file.name, size: file.size, kind: item?.artifact.kind ?? "Unrecognized",
+      usable: Boolean(item), count: item?.spillPlans.reduce((sum, plan) => sum + plan.plan.statements.length, 0) || item?.rowCount || 0,
+      countLabel: item?.spillPlans.length ? "plan statements" : "source rows (including preamble)",
+      worksheets: item?.worksheets ?? [], ...captureRange(item ? [item.artifact.capturedAt, ...item.observations.map((observation) => observation.capturedAt)] : []),
+      recognized: item ? [...new Set([...item.artifact.resultSetTypes ?? [], ...item.recognizedHeaders])] : [],
+      missing: item ? deepCase.assertions.filter((assertion) => assertion.state === "Not Evaluated").flatMap((assertion) => assertion.missingEvidence) : [],
+      warnings: [...new Set([...(item?.artifact.warnings ?? []), ...messages.filter((message) => message.fileName === file.name).map((message) => message.message)])],
+    };
+  });
+  return { caseId: deepCase.id, sourceCase: deepCase, importedAt, accepted, acceptedFiles, messages, previews };
+}
+
+export function commitEvidenceFiles(deepCase: DeepAnalysisCase, batch: PreparedEvidenceBatch, selectedFileNames?: Set<File>): { deepCase: DeepAnalysisCase; acceptedFiles: File[]; messages: EvidenceImportMessage[] } {
+  if (deepCase.id !== batch.caseId || deepCase !== batch.sourceCase) throw new Error("This preview belongs to a different case.");
+  const importedAt = batch.importedAt;
+  const pairs = batch.acceptedFiles.map((file, index) => ({ file, item: batch.accepted[index] })).filter(({ file }) => !selectedFileNames || selectedFileNames.has(file));
+  const acceptedFiles = pairs.map(({ file }) => file);
+  const accepted = pairs.map(({ item }) => item);
+  const messages = selectedFileNames ? batch.messages.filter((message) => [...selectedFileNames].some((file) => file.name === message.fileName)) : batch.messages;
+  if (!accepted.length) return { deepCase, acceptedFiles, messages };
   const artifacts = accepted.map((item) => item.artifact);
   const observations = accepted.flatMap((item) => item.observations);
-  const acceptedHashes = new Set(artifacts.map((artifact) => artifact.sha256));
-  const acceptedFiles: File[] = [];
-  for (const file of files) if (acceptedHashes.has(await sha256File(file))) acceptedFiles.push(file);
+  const priorSpill = deepCase.spillTriage ?? { candidates: [], selectedCandidateId: null, imports: [], plans: [], manualPlanSelections: [] };
+  const combinedCandidates = rankSpillCandidates([...priorSpill.candidates, ...accepted.flatMap((item) => item.spillCandidates)].map((candidate, index) => ({ ...candidate, sourceOrder: index })));
+  const nextSpill = deepCase.profileId === "spill-triage" || combinedCandidates.length || accepted.some((item) => item.spillPlans.length)
+    ? {
+      candidates: combinedCandidates,
+      selectedCandidateId: priorSpill.selectedCandidateId && combinedCandidates.some((candidate) => candidate.id === priorSpill.selectedCandidateId) ? priorSpill.selectedCandidateId : combinedCandidates.find((candidate) => candidate.rank === 1)?.id ?? combinedCandidates[0]?.id ?? null,
+      imports: [...priorSpill.imports, ...accepted.flatMap((item) => item.spillImports)],
+      plans: [...priorSpill.plans, ...accepted.flatMap((item) => item.spillPlans)],
+      manualPlanSelections: priorSpill.manualPlanSelections ?? [],
+    } : undefined;
+  const spillTriage = nextSpill ? { ...nextSpill, manualPlanSelections: validManualPlanSelections(nextSpill) } : undefined;
+  const importedSnapshots = accepted.flatMap((item) => item.capabilitySnapshots).sort((left, right) => right.capturedAt.localeCompare(left.capturedAt));
+  const serverCapabilities = importedSnapshots[0] ?? deepCase.serverCapabilities;
+  const selectedCandidate = spillTriage?.candidates.find((candidate) => candidate.id === spillTriage.selectedCandidateId) ?? spillTriage?.candidates[0];
+  const collectionSteps = deepCase.profileId === "spill-triage" ? spillCollectionSteps(selectedCandidate, serverCapabilities, deepCase.id) : deepCase.collectionSteps;
   const updated = evaluateDeepCase({
     ...deepCase,
-    schemaVersion: "1.1",
+    schemaVersion: "1.5",
     updatedAt: importedAt,
     artifacts: [...deepCase.artifacts, ...artifacts],
     observations: [...(deepCase.observations ?? []), ...observations],
+    spillTriage,
+    serverCapabilities,
+    collectionSteps,
     events: artifacts.length ? [...deepCase.events, { occurredAt: importedAt, type: "Evidence imported", summary: `${artifacts.length} evidence file${artifacts.length === 1 ? "" : "s"} attached and evaluated.` }] : deepCase.events,
   });
-  return { deepCase: updated, acceptedFiles };
+  return { deepCase: updated, acceptedFiles, messages };
+}
+
+export async function addEvidenceFiles(deepCase: DeepAnalysisCase, files: File[], importedAt = new Date().toISOString()) {
+  return commitEvidenceFiles(deepCase, await prepareEvidenceFiles(deepCase, files, importedAt));
+}
+
+export function selectSpillCandidate(deepCase: DeepAnalysisCase, candidateId: string): DeepAnalysisCase {
+  if (!deepCase.spillTriage?.candidates.some((candidate) => candidate.id === candidateId)) return deepCase;
+  const spillTriage = { ...deepCase.spillTriage, selectedCandidateId: candidateId };
+  const candidate = spillTriage.candidates.find((item) => item.id === candidateId);
+  return evaluateDeepCase({ ...deepCase, updatedAt: new Date().toISOString(), spillTriage, collectionSteps: spillCollectionSteps(candidate, deepCase.serverCapabilities, deepCase.id) });
+}
+
+export function chooseSpillPlanStatement(deepCase: DeepAnalysisCase, candidateId: string, artifactId: string, statementId: string, selectedAt = new Date().toISOString()): DeepAnalysisCase {
+  if (!deepCase.spillTriage) return deepCase;
+  const candidate = deepCase.spillTriage.candidates.find((item) => item.id === candidateId);
+  if (!candidate) return deepCase;
+  const resolution = resolveCandidatePlan(candidate, deepCase.spillTriage.plans);
+  if (!resolution.ambiguous || !resolution.alternatives.some((alternative) => alternative.artifactId === artifactId && alternative.statementId === statementId)) return deepCase;
+  const selection = { candidateId, artifactId, statementId, selectedAt };
+  const manualPlanSelections = [...(deepCase.spillTriage.manualPlanSelections ?? []).filter((item) => item.candidateId !== candidateId), selection];
+  return evaluateDeepCase({ ...deepCase, updatedAt: selectedAt, spillTriage: { ...deepCase.spillTriage, manualPlanSelections } });
+}
+
+export function clearSpillPlanStatement(deepCase: DeepAnalysisCase, candidateId: string, clearedAt = new Date().toISOString()): DeepAnalysisCase {
+  if (!deepCase.spillTriage?.manualPlanSelections?.some((item) => item.candidateId === candidateId)) return deepCase;
+  return evaluateDeepCase({ ...deepCase, updatedAt: clearedAt, spillTriage: { ...deepCase.spillTriage, manualPlanSelections: deepCase.spillTriage.manualPlanSelections.filter((item) => item.candidateId !== candidateId) } });
 }
 
 function safeFileName(name: string): string {
@@ -506,30 +810,83 @@ function safeFileName(name: string): string {
   return base.replace(/[<>:"/\\|?*\u0000-\u001F]/g, "_").replace(/[. ]+$/g, "") || "evidence";
 }
 
+function normalizeServerCapabilitySnapshot(value: unknown): ServerCapabilitySnapshot {
+  if (!value || typeof value !== "object") throw new Error("The server capability snapshot in this case is malformed.");
+  const snapshot = value as Partial<ServerCapabilitySnapshot>;
+  const permissions = snapshot.permissions as Partial<ServerCapabilitySnapshot["permissions"]> | undefined;
+  const nullableString = (item: unknown) => item === null || typeof item === "string";
+  const nullableNumber = (item: unknown) => item === null || typeof item === "number" && Number.isFinite(item);
+  const nullableBoolean = (item: unknown) => item === null || item === undefined || typeof item === "boolean";
+  const validTool = (item: unknown) => {
+    if (!item || typeof item !== "object") return false;
+    const tool = item as Partial<ServerCapabilitySnapshot["tools"][number]>;
+    return typeof tool.toolId === "string" && typeof tool.objectName === "string" && typeof tool.installed === "boolean"
+      && nullableString(tool.databaseName) && nullableString(tool.schemaName) && nullableBoolean(tool.compatibleSignature)
+      && nullableString(tool.version) && nullableString(tool.versionDate)
+      && Array.isArray(tool.detectedParameters) && tool.detectedParameters.every((parameter) => typeof parameter === "string");
+  };
+  const valid = snapshot.schemaVersion === "1.0" && snapshot.adapterId === "SQL_EVALUATE_CAPABILITIES_V1"
+    && typeof snapshot.capturedAt === "string" && Number.isFinite(new Date(snapshot.capturedAt).getTime())
+    && typeof snapshot.sourceArtifactId === "string" && typeof snapshot.productVersion === "string" && /^\d+(?:\.\d+){1,3}$/.test(snapshot.productVersion)
+    && nullableString(snapshot.serverName) && nullableString(snapshot.productLevel) && nullableString(snapshot.edition)
+    && nullableNumber(snapshot.engineEdition) && nullableNumber(snapshot.databaseId) && nullableString(snapshot.databaseName)
+    && ["ON", "OFF", "UNAVAILABLE", "UNKNOWN"].includes(snapshot.lastQueryPlanStats ?? "") && nullableString(snapshot.queryStoreState)
+    && permissions && nullableBoolean(permissions.viewServerState) && nullableBoolean(permissions.viewServerPerformanceState)
+    && nullableBoolean(permissions.viewDatabaseState) && nullableBoolean(permissions.viewDatabasePerformanceState)
+    && Array.isArray(snapshot.tools) && snapshot.tools.every(validTool)
+    && Array.isArray(snapshot.warnings) && snapshot.warnings.every((warning) => typeof warning === "string");
+  if (!valid || !permissions) throw new Error("The server capability snapshot in this case is malformed.");
+  return {
+    ...snapshot,
+    permissions: {
+      viewServerState: permissions.viewServerState ?? null,
+      viewServerPerformanceState: permissions.viewServerPerformanceState ?? null,
+      viewDatabaseState: permissions.viewDatabaseState ?? null,
+      viewDatabasePerformanceState: permissions.viewDatabasePerformanceState ?? null,
+    },
+  } as ServerCapabilitySnapshot;
+}
+
 function validateCase(value: unknown): DeepAnalysisCase {
   if (!value || typeof value !== "object") throw new Error("Case JSON is not an object.");
   const candidate = value as Partial<DeepAnalysisCase>;
-  const supportedProfiles: DeepProfileId[] = ["cpu-backed-blocking", "transaction-blocking", "worker-exhaustion", "compile-pressure", "memory-grants", "plan-specific", "actual-plan"];
-  if ((candidate.schemaVersion !== "1.0" && candidate.schemaVersion !== "1.1") || typeof candidate.id !== "string" || !candidate.profileId || !supportedProfiles.includes(candidate.profileId)) throw new Error("Unsupported or malformed Deep Analysis case.");
+  const supportedProfiles: DeepProfileId[] = ["cpu-backed-blocking", "transaction-blocking", "worker-exhaustion", "compile-pressure", "memory-grants", "plan-specific", "actual-plan", "spill-triage"];
+  if ((candidate.schemaVersion !== "1.0" && candidate.schemaVersion !== "1.1" && candidate.schemaVersion !== "1.2" && candidate.schemaVersion !== "1.3" && candidate.schemaVersion !== "1.4" && candidate.schemaVersion !== "1.5" && candidate.schemaVersion !== "1.6") || typeof candidate.id !== "string" || !candidate.profileId || !supportedProfiles.includes(candidate.profileId)) throw new Error("Unsupported or malformed Deep Analysis case.");
   if (!Array.isArray(candidate.assertions) || !Array.isArray(candidate.collectionSteps) || !Array.isArray(candidate.artifacts) || !Array.isArray(candidate.events)) throw new Error("Deep Analysis case is missing required collections.");
-  if (!candidate.sourceFinding || typeof candidate.sourceFinding.title !== "string") throw new Error("Deep Analysis case is missing its source finding.");
-  const deepCase = candidate as DeepAnalysisCase;
-  if (deepCase.schemaVersion === "1.1") return deepCase;
+  if (candidate.profileId !== "spill-triage" && (!candidate.sourceFinding || typeof candidate.sourceFinding.title !== "string")) throw new Error("Deep Analysis case is missing its source finding.");
+  const details = validateCaseDetails({ title: candidate.title, ticketReference: candidate.ticketReference === undefined ? "" : candidate.ticketReference, notes: candidate.notes === undefined ? "" : candidate.notes, status: candidate.status === undefined ? "Investigating" : candidate.status });
+  const deepCase = { ...candidate, ...details } as DeepAnalysisCase;
+  const serverCapabilities = deepCase.serverCapabilities ? normalizeServerCapabilitySnapshot(deepCase.serverCapabilities) : undefined;
+  if (deepCase.schemaVersion === "1.3" || deepCase.schemaVersion === "1.4" || deepCase.schemaVersion === "1.5" || deepCase.schemaVersion === "1.6") {
+    if (deepCase.spillTriage) {
+      const selections = deepCase.spillTriage.manualPlanSelections;
+      if (!Array.isArray(selections) || selections.some((selection) => !selection || typeof selection.candidateId !== "string" || typeof selection.artifactId !== "string" || typeof selection.statementId !== "string" || typeof selection.selectedAt !== "string" || !Number.isFinite(new Date(selection.selectedAt).getTime())) || new Set(selections.map((selection) => selection.candidateId)).size !== selections.length) throw new Error("The Spill Triage case has malformed manual plan selections.");
+    }
+    if (deepCase.schemaVersion === "1.4" || deepCase.schemaVersion === "1.5" || deepCase.schemaVersion === "1.6") return { ...deepCase, schemaVersion: "1.6", serverCapabilities };
+  }
   const existing = new Set(deepCase.assertions.map((item) => item.id));
   const additions = [
     assertion("compilation-pressure", "Compilation pressure", "Compilation activity materially contributed to scheduler pressure during the incident.", "Not Evaluated", [], ["Repeated compilation and batch counter samples"]),
     assertion("serialization", "Root plan serialization", "The responsible root statement was forced to execute serially for a plan-specific reason.", "Not Evaluated", [], ["A stably matched root Showplan containing NonParallelPlanReason"]),
     assertion("memory-grant-symptom", "Root memory-grant symptom", "The responsible query reserved materially more workspace memory than it used.", "Not Evaluated", [], ["A stably matched actual plan or cache row"]),
   ].filter((item) => !existing.has(item.id));
-  return {
+  const migrated: DeepAnalysisCase = {
     ...deepCase,
-    schemaVersion: "1.1",
+    schemaVersion: "1.6",
+    origin: deepCase.origin ?? (deepCase.sourceFinding ? { kind: "finding", finding: deepCase.sourceFinding } : { kind: "manual", label: "Spill Triage" }),
     rootIdentity: deepCase.rootIdentity ?? { sessionId: deepCase.rootSessionId },
     incidentWindow: deepCase.incidentWindow ?? { firstObservedAt: null, lastObservedAt: null, overlapQuality: "Unknown", explanation: "This case predates timestamped incident windows." },
     observations: deepCase.observations ?? [],
     captureAttempts: deepCase.captureAttempts ?? [],
     assertions: [...deepCase.assertions, ...additions],
+    spillTriage: deepCase.spillTriage ? { ...deepCase.spillTriage, manualPlanSelections: deepCase.spillTriage.manualPlanSelections ?? [] } : undefined,
+    serverCapabilities,
   };
+  if (migrated.profileId === "spill-triage") {
+    const selected = migrated.spillTriage?.candidates.find((candidate) => candidate.id === migrated.spillTriage?.selectedCandidateId) ?? migrated.spillTriage?.candidates[0];
+    migrated.collectionSteps = spillCollectionSteps(selected, migrated.serverCapabilities, migrated.id);
+  }
+  return migrated;
 }
 
 export async function createDeepCaseArchive(deepCase: DeepAnalysisCase, evidenceFiles: File[], exportedAt = new Date().toISOString()): Promise<DeepCaseArchive> {
@@ -557,7 +914,7 @@ export async function createDeepCaseArchive(deepCase: DeepAnalysisCase, evidence
   const caseBytes = strToU8(JSON.stringify(deepCase, null, 2));
   const caseCopy = new Uint8Array(caseBytes.byteLength); caseCopy.set(caseBytes);
   const caseSha256 = await sha256Bytes(caseCopy.buffer);
-  const manifest: DeepCaseArchiveManifest = { schemaVersion: "1.1", caseId: deepCase.id, appVersion: APP_VERSION, exportedAt, sensitive: true, casePath, caseSha256, evidence: entries };
+  const manifest: DeepCaseArchiveManifest = { schemaVersion: "1.6", caseId: deepCase.id, appVersion: APP_VERSION, exportedAt, sensitive: true, casePath, caseSha256, evidence: entries };
   archiveFiles[manifest.casePath] = caseBytes;
   archiveFiles["manifest.json"] = strToU8(JSON.stringify(manifest, null, 2));
   return { fileName: `SQL-Evaluate-Case_${deepCase.id}.sqlevalcase.zip`, bytes: zipSync(archiveFiles, { level: 6 }), manifest };
@@ -607,7 +964,7 @@ export async function openDeepCaseArchive(file: File): Promise<{ deepCase: DeepA
   if (total > UNCOMPRESSED_LIMIT) throw new Error("The Deep Analysis case expands beyond the 200 MB safety limit.");
   if (!entries["manifest.json"]) throw new Error("The Deep Analysis case has no manifest.");
   const manifest = JSON.parse(strFromU8(entries["manifest.json"])) as DeepCaseArchiveManifest;
-  if ((manifest.schemaVersion !== "1.0" && manifest.schemaVersion !== "1.1") || typeof manifest.caseId !== "string" || !safeArchivePath(manifest.casePath) || (manifest.caseSha256 !== undefined && typeof manifest.caseSha256 !== "string") || !Array.isArray(manifest.evidence)) throw new Error("The Deep Analysis manifest is malformed or unsupported.");
+  if ((manifest.schemaVersion !== "1.0" && manifest.schemaVersion !== "1.1" && manifest.schemaVersion !== "1.2" && manifest.schemaVersion !== "1.3" && manifest.schemaVersion !== "1.4" && manifest.schemaVersion !== "1.5" && manifest.schemaVersion !== "1.6") || typeof manifest.caseId !== "string" || !safeArchivePath(manifest.casePath) || (manifest.caseSha256 !== undefined && typeof manifest.caseSha256 !== "string") || !Array.isArray(manifest.evidence)) throw new Error("The Deep Analysis manifest is malformed or unsupported.");
   const caseBytes = entries[manifest.casePath];
   if (!caseBytes) throw new Error("The Deep Analysis case JSON is missing.");
   if (manifest.caseSha256) {
@@ -626,7 +983,7 @@ export async function openDeepCaseArchive(file: File): Promise<{ deepCase: DeepA
     if (hash !== evidence.sha256) throw new Error(`${evidence.fileName}: evidence hash verification failed.`);
     files.push(new File([copy.buffer], evidence.fileName));
   }
-  const baselineFinding: Finding = {
+  const baselineFinding: Finding | null = deepCase.sourceFinding ? {
     ...deepCase.sourceFinding,
     explanation: "Portable Deep Analysis case source finding.",
     remediation: [],
@@ -636,8 +993,8 @@ export async function openDeepCaseArchive(file: File): Promise<{ deepCase: DeepA
     firstSeen: deepCase.incidentWindow?.firstObservedAt,
     lastSeen: deepCase.incidentWindow?.lastObservedAt,
     impact: 0,
-  };
-  const baselineReport: AnalysisReport = {
+  } : null;
+  const baselineReport: AnalysisReport | null = baselineFinding ? {
     schemaVersion: "1.0",
     createdAt: deepCase.sourceReportCreatedAt,
     inputs: deepCase.sourceFileNames.map((fileName, index) => ({ id: `reopened-source-${index}`, fileName, size: 0, format: "csv", rowCount: 0, recognizedColumns: [], unknownColumns: [], warnings: [] })),
@@ -646,19 +1003,34 @@ export async function openDeepCaseArchive(file: File): Promise<{ deepCase: DeepA
     findings: [baselineFinding],
     dataQuality: { presentColumns: [], missingColumns: [], unknownColumns: [], warnings: [], notEvaluatedRules: [] },
     redacted: false,
-  };
-  const baseline = createDeepAnalysisCase(baselineReport, baselineFinding, deepCase.createdAt, deepCase.id, deepCase.profileId);
+  } : null;
+  const baseline = baselineReport && baselineFinding ? createDeepAnalysisCase(baselineReport, baselineFinding, deepCase.createdAt, deepCase.id, deepCase.profileId) : createSpillTriageCase(deepCase.createdAt, deepCase.id);
   const storedByHash = new Map(deepCase.artifacts.map((artifact) => [artifact.sha256, artifact]));
   const reInspected = await Promise.all(files.map((evidenceFile, index) => inspectEvidenceFile(evidenceFile, deepCase.rootSessionId, storedByHash.get(manifest.evidence[index]?.sha256 ?? "")?.importedAt ?? manifest.exportedAt)));
   const reopenedAt = new Date().toISOString();
+  const rebuiltCandidates = rankSpillCandidates(reInspected.flatMap((item) => item.spillCandidates).map((candidate, index) => ({ ...candidate, sourceOrder: index })));
+  const rebuiltSpill = deepCase.profileId === "spill-triage" || rebuiltCandidates.length ? (() => {
+    const rebuilt: SpillTriageState = {
+      candidates: rebuiltCandidates,
+      selectedCandidateId: deepCase.spillTriage?.selectedCandidateId && rebuiltCandidates.some((candidate) => candidate.id === deepCase.spillTriage?.selectedCandidateId) ? deepCase.spillTriage.selectedCandidateId : rebuiltCandidates.find((candidate) => candidate.rank === 1)?.id ?? null,
+      imports: reInspected.flatMap((item) => item.spillImports),
+      plans: reInspected.flatMap((item) => item.spillPlans),
+      manualPlanSelections: deepCase.spillTriage?.manualPlanSelections ?? [],
+    };
+    return { ...rebuilt, manualPlanSelections: validManualPlanSelections(rebuilt) };
+  })() : undefined;
+  const rebuiltCapabilities = reInspected.flatMap((item) => item.capabilitySnapshots).sort((left, right) => right.capturedAt.localeCompare(left.capturedAt))[0] ?? deepCase.serverCapabilities;
+  const rebuiltSelected = rebuiltSpill?.candidates.find((candidate) => candidate.id === rebuiltSpill.selectedCandidateId) ?? rebuiltSpill?.candidates[0];
   const reconstructed = evaluateDeepCase({
     ...deepCase,
-    schemaVersion: "1.1",
+    schemaVersion: "1.5",
     updatedAt: reopenedAt,
     assertions: baseline.assertions,
-    collectionSteps: baseline.collectionSteps,
+    collectionSteps: deepCase.profileId === "spill-triage" ? spillCollectionSteps(rebuiltSelected, rebuiltCapabilities, deepCase.id) : baseline.collectionSteps,
     artifacts: reInspected.map((item) => item.artifact),
     observations: reInspected.flatMap((item) => item.observations),
+    spillTriage: rebuiltSpill,
+    serverCapabilities: rebuiltCapabilities,
     captureAttempts: [],
     narrative: undefined,
     events: [...deepCase.events, { occurredAt: reopenedAt, type: "Case reopened", summary: `Reopened ${file.name}; derived evidence state was rebuilt from verified attachments.` }],

@@ -1,7 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { incidentOverlap, matchQueryIdentity } from "./correlation";
+import { hasCorrelationReadyIdentity, incidentOverlap, matchQueryIdentity } from "./correlation";
 
 describe("Deep Analysis correlation", () => {
+  it("defines which identity combinations can support automatic correlation", () => {
+    expect(hasCorrelationReadyIdentity(undefined)).toBe(false);
+    expect(hasCorrelationReadyIdentity({ queryHash: "0xQ" })).toBe(false);
+    expect(hasCorrelationReadyIdentity({ queryHash: "0xQ", queryPlanHash: "0xP" })).toBe(true);
+    expect(hasCorrelationReadyIdentity({ sqlHandle: "0xS" })).toBe(true);
+    expect(hasCorrelationReadyIdentity({ queryStoreQueryId: 7, queryStorePlanId: 9 })).toBe(false);
+    expect(hasCorrelationReadyIdentity({ queryStoreQueryId: 7, queryStorePlanId: 9, databaseId: 5 })).toBe(true);
+  });
+
   it("prefers exact handles and never treats query hash alone as an exact plan match", () => {
     expect(matchQueryIdentity({ planHandle: "0xABCD" }, { planHandle: "abcd" })).toMatchObject({ matched: true, quality: "Exact" });
     expect(matchQueryIdentity({ queryHash: "0x1111", databaseId: 5 }, { queryHash: "1111", databaseId: 5 })).toMatchObject({ matched: true, quality: "Candidate" });
@@ -17,6 +26,39 @@ describe("Deep Analysis correlation", () => {
       { sqlHandle: "0xBATCH", statementStartOffset: 10, statementEndOffset: 40 },
       { sqlHandle: "0xBATCH", statementStartOffset: 10, statementEndOffset: 40 },
     )).toMatchObject({ matched: true, quality: "Exact" });
+  });
+
+  it("requires database context for an exact Query Store match", () => {
+    expect(matchQueryIdentity(
+      { queryStoreQueryId: 7, queryStorePlanId: 9, databaseId: 5 },
+      { queryStoreQueryId: 7, queryStorePlanId: 9, databaseId: 5 },
+    )).toMatchObject({ matched: true, quality: "Exact", conflicts: [] });
+    expect(matchQueryIdentity(
+      { queryStoreQueryId: 7, queryStorePlanId: 9 },
+      { queryStoreQueryId: 7, queryStorePlanId: 9 },
+    )).toMatchObject({ matched: true, quality: "Candidate", conflicts: [] });
+    expect(matchQueryIdentity(
+      { queryStoreQueryId: 7, queryStorePlanId: 9, databaseId: 5 },
+      { queryStoreQueryId: 7, queryStorePlanId: 9, databaseId: 6 },
+    )).toMatchObject({ matched: false, quality: "None", conflicts: ["database ID conflicts"] });
+  });
+
+  it("blocks weaker fallbacks when stronger supplied identity fields conflict", () => {
+    expect(matchQueryIdentity(
+      { planHandle: "0xA", queryHash: "0xQ", queryPlanHash: "0xP1" },
+      { planHandle: "0xB", queryHash: "0xQ", queryPlanHash: "0xP1" },
+    )).toMatchObject({ matched: false, quality: "Strong", conflicts: ["plan_handle conflicts"] });
+    expect(matchQueryIdentity(
+      { sqlHandle: "0xS", statementStartOffset: 0, statementEndOffset: 20, queryHash: "0xQ", queryPlanHash: "0xP" },
+      { sqlHandle: "0xS", statementStartOffset: 22, statementEndOffset: 40, queryHash: "0xQ", queryPlanHash: "0xP" },
+    )).toMatchObject({ matched: false, quality: "None", conflicts: ["statement_start_offset conflicts", "statement_end_offset conflicts"] });
+  });
+
+  it("does not report mismatched fields as a conflict when the sources share no stable identity", () => {
+    expect(matchQueryIdentity(
+      { queryStoreQueryId: 7, queryStorePlanId: 9, databaseId: 5 },
+      { queryStoreQueryId: 8, queryStorePlanId: 10, databaseId: 6 },
+    )).toMatchObject({ matched: false, quality: "None", conflicts: [], reason: "No supported stable identifier matches." });
   });
 
   it("keeps evidence outside the incident window contextual", () => {
